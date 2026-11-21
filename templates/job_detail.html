@@ -67,9 +67,9 @@
     <textarea name="notes" rows="4" placeholder="Who you talked to, portal login, what you sent…" class="form-control">{{ job.notes or '' }}</textarea>
   </label>
   <div class="inline span-2">
-    <button type="submit" class="btn btn-primary">Save tracker</button>
+    <button type="submit" class="btn btn-primary">Save to tracker</button>
     {% if job.posting_url %}
-    <a role="button" class="btn btn-primary" href="{{ job.posting_url }}" target="_blank" rel="noopener">{{ job.posting_label }}</a>
+    <a role="button" class="btn btn-outline-secondary" href="{{ job.posting_url }}" target="_blank" rel="noopener">{{ job.posting_label }}</a>
     {% endif %}
     <a role="button" class="btn btn-outline-secondary" href="{{ url_for('tracker') }}">Open tracker</a>
   </div>

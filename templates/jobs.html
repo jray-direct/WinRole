@@ -10,8 +10,12 @@
 {% if list_qs.pop('page', None) is not none %}{% endif %}
 {% if list_qs.pop('partial', None) is not none %}{% endif %}
 <div class="jobs-head">
-  <h1>Jobs <span class="muted">{% if total %}<span id="jobs-shown">{{ jobs|length }}</span> of {{ total }}{% else %}0{% endif %}</span></h1>
-  <div class="inline">
+  <div>
+    <p class="kicker">Triage</p>
+    <h1>Jobs</h1>
+    <p class="muted">{% if total %}<span id="jobs-shown">{{ jobs|length }}</span> of {{ total }} match{% else %}No jobs in this view{% endif %}</p>
+  </div>
+  <div class="head-actions">
     {% if state.running %}<span class="pill">Scan running</span>{% endif %}
     <button type="button" class="btn btn-outline-secondary" id="open-delete">Delete scan</button>
     <button type="button" id="open-scan" class="btn btn-primary">{{ "View scan" if state.running else "New scan" }}</button>
@@ -29,13 +33,20 @@
       <p>This may take a minute or two...</p>
     </div>
     <div class="scan-setup" {% if state.running %}hidden{% endif %}>
-    <p class="muted">Only jobs that pass these filters are saved. Cities below are searched on this run.</p>
+    <p class="muted">Turn on at least one city, then set the keyword. Only jobs that pass the filters are saved.</p>
+    <div class="scan-section">
+      <h3>Cities</h3>
+      {% include "_cities_panel.html" %}
+    </div>
     <form method="post" action="{{ url_for('scrape_page') }}" class="scrape-form compact-filters">
-      <label>Keyword
+      <div class="scan-section span-2">
+        <h3>Required</h3>
+      </div>
+      <label>What role are you hunting?
         <input type="text" id="scan-keyword" name="keyword" required placeholder="Network+" class="form-control">
-        <span class="hint">Saves jobs that mention this in the title or description — not only jobs whose title is that role.</span>
+        <span class="hint">Saves jobs that mention this in the title or description — not only exact title matches.</span>
       </label>
-      <label>Keep jobs where the keyword is
+      <label>How strict should keyword matching be?
         <select name="kw_match" class="form-select">
           <option value="any">Mentioned anywhere</option>
           <option value="title">In the job title</option>
@@ -45,8 +56,11 @@
       </label>
       <label class="check">
         <input type="checkbox" name="full_text" value="1" class="form-check-input"> Fetch full job text
-        <span class="hint">Indeed cards are short. Full text is slower, but years, certs, and required vs mentioned are accurate.</span>
+        <span class="hint">Slower, but years, certs, and required vs mentioned are more accurate.</span>
       </label>
+      <div class="scan-section span-2">
+        <h3>Fit filters</h3>
+      </div>
       <div class="title-filters">
         {{ templated_field("title_include", "title_include", "", templates.title_include, "Title includes", "analyst, engineer", "form") }}
         {{ templated_field("title_exclude", "title_exclude", "", templates.title_exclude, "Title excludes", "senior, lead, intern", "form") }}
@@ -58,7 +72,7 @@
         <input type="number" name="min_salary" placeholder="60000" value="{{ '%.0f' % profile.min_pay if profile and profile.min_pay else '' }}" class="form-control">
         <span class="hint">Jobs that list no pay are kept.</span>
       </label>
-      <label>I have N years
+      <label>Years of experience you have
         <input type="number" name="my_years" min="0" max="60" step="0.5" placeholder="3" value="{{ '%g' % profile.years if profile and profile.years is not none else '' }}" class="form-control">
         <span class="hint">Skips jobs that require more. No stated number? Kept.</span>
       </label>
@@ -87,16 +101,16 @@
     {% if state.error %}
     <p class="err">{{ state.error }}</p>
     {% endif %}
-    <h3>Cities</h3>
-    {% include "_cities_panel.html" %}
-    <div class="page-head">
-      <h3>Log</h3>
-      <form method="post" action="{{ url_for('scrape_clear_log') }}">
-        <button type="submit" class="btn btn-outline-secondary" {% if state.running %}disabled{% endif %}>Clear log</button>
-      </form>
-    </div>
-    <pre id="log" class="log">{% for line in state.log %}{{ line }}
+    <div class="scan-section">
+      <div class="page-head">
+        <h3>Log</h3>
+        <form method="post" action="{{ url_for('scrape_clear_log') }}">
+          <button type="submit" class="btn btn-outline-secondary" {% if state.running %}disabled{% endif %}>Clear log</button>
+        </form>
+      </div>
+      <pre id="log" class="log">{% for line in state.log %}{{ line }}
 {% endfor %}</pre>
+    </div>
     </div>
   </div>
 </div>
@@ -104,7 +118,7 @@
 {% if profile_defaults or active_filters %}
 <div class="active-filters">
   {% if profile_defaults %}
-  <span class="pill">From your profile: {{ profile_defaults | join(" · ") }}</span>
+  <span class="pill" title="These profile defaults shrink the list until you turn them off">Narrowed by profile: {{ profile_defaults | join(" · ") }}</span>
   <a href="{{ defaults_off_url }}">Turn off</a>
   <a href="{{ url_for('profile_page') }}">Edit profile</a>
   {% endif %}
@@ -146,10 +160,10 @@
       <option value="{{ value }}" {% if filters.order == value %}selected{% endif %}>Sort: {{ label }}</option>
       {% endfor %}
     </select>
-    <button type="button" class="btn btn-outline-secondary{% if extra_count %} filters-on{% endif %}" id="toggle-more" aria-expanded="false" aria-controls="filter-more" data-more="More filters{% if extra_count %} · {{ extra_count }}{% endif %}">
+    <button type="button" class="btn btn-outline-secondary{% if extra_count %} filters-on{% endif %}" id="toggle-more" aria-expanded="false" aria-controls="filter-more" title="{% if extra_count %}{{ extra_count }} extra filter{{ 's' if extra_count != 1 else '' }} active{% else %}Salary, years, clearance, and more{% endif %}" data-more="More filters{% if extra_count %} · {{ extra_count }}{% endif %}">
       More filters{% if extra_count %} · {{ extra_count }}{% endif %}
     </button>
-    <button type="submit" class="btn btn-primary">Apply</button>
+    <button type="submit" class="btn btn-primary" title="Refresh the list with these filters">Apply filters</button>
   </div>
   <div class="filter-more is-closed" id="filter-more" inert>
     <div class="filter-more-grid">
@@ -266,9 +280,19 @@
 <div class="jobs-split">
   <section class="jobs-list" aria-label="Job list">
     {% if jobs %}
+    <p class="list-hint">Tip: press <kbd>j</kbd> / <kbd>k</kbd> to move between jobs</p>
     {% include "_job_rows.html" %}
     {% else %}
-    <p class="muted pad">No jobs match. Start a scan or loosen filters.</p>
+    <div class="empty-state pad">
+      <p class="empty-title">No jobs match</p>
+      <p>{% if keywords %}Loosen filters, or run a new scan for a different keyword.{% else %}Run a scan to pull jobs into this list.{% endif %}</p>
+      <div class="inline">
+        <button type="button" class="btn btn-primary" id="empty-open-scan">New scan</button>
+        {% if active_filters or profile_defaults %}
+        <a class="btn btn-outline-secondary" href="{{ url_for('jobs', defaults=0) }}">Clear filters</a>
+        {% endif %}
+      </div>
+    </div>
     {% endif %}
     {% if jobs|length < total %}
     <button type="button" class="btn btn-outline-secondary load-more" id="load-more"
@@ -284,7 +308,10 @@
       {% set return_to = request.full_path %}
       {% include "job_pane.html" %}
     {% else %}
-      <p class="muted pad">Select a job to read the description.</p>
+      <div class="empty-state pad">
+        <p class="empty-title">Select a job</p>
+        <p>Open a row to read the posting, then mark it Interested or Applied to put it in Tracker.</p>
+      </div>
     {% endif %}
   </section>
 </div>
@@ -532,6 +559,8 @@
       hideModal(backdrop);
     }
     if (openBtn) openBtn.addEventListener("click", openScan);
+    const emptyOpenScan = document.getElementById("empty-open-scan");
+    if (emptyOpenScan) emptyOpenScan.addEventListener("click", openScan);
     if (closeBtn) closeBtn.addEventListener("click", closeScan);
     if (backdrop) {
       backdrop.addEventListener("click", function (event) {

@@ -25,19 +25,37 @@
     <h1>Insights{% if insights.keyword %} · {{ insights.keyword }}{% endif %}</h1>
     <p class="muted">{{ insights.total }} jobs in this view · {{ insights.locations_enabled }}/{{ insights.locations_total }} cities on</p>
   </div>
-  <form class="scope" method="get">
-    <label>Scope
-      <select name="keyword" onchange="this.form.submit()" class="form-select">
-        <option value="">All stored jobs</option>
-        {% for k in keywords %}
-        <option value="{{ k.keyword }}" {% if selected_keyword == k.keyword %}selected{% endif %}>
-          {{ k.keyword }} ({{ k.n }})
-        </option>
-        {% endfor %}
-      </select>
-    </label>
-  </form>
+  <div class="head-actions">
+    {% if insights.total %}
+    <a class="btn btn-primary" href="{{ url_for('jobs', keyword=kw or '', f=1) }}">Open Jobs for this scope</a>
+    {% else %}
+    <a class="btn btn-primary" href="{{ url_for('jobs', scan=1) }}">New scan</a>
+    {% endif %}
+    <form class="scope" method="get">
+      <label>Scope
+        <select name="keyword" onchange="this.form.submit()" class="form-select">
+          <option value="">All stored jobs</option>
+          {% for k in keywords %}
+          <option value="{{ k.keyword }}" {% if selected_keyword == k.keyword %}selected{% endif %}>
+            {{ k.keyword }} ({{ k.n }})
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+    </form>
+  </div>
 </header>
+
+{% if not insights.total %}
+<section class="panel empty-state">
+  <h2 class="empty-title">No jobs yet</h2>
+  <p>Run a scan with a keyword and at least one city. Saved jobs show up here as market stats, then you triage them in Jobs.</p>
+  <div class="inline">
+    <a class="btn btn-primary" href="{{ url_for('jobs', scan=1) }}">Start a scan</a>
+    <a class="btn btn-outline-secondary" href="{{ url_for('profile_page') }}">Set your profile first</a>
+  </div>
+</section>
+{% endif %}
 
 <section class="stats">
   <article>
@@ -91,6 +109,15 @@
     <article><div class="num">{{ fit.clearance }}</div><div class="lbl">At or below your clearance</div></article>
   </div>
   <p class="muted small">Jobs with no pay listed or no stated years count as a fit, since nothing rules them out.</p>
+  {% if insights.total and fit.all %}
+  <div class="inline">
+    <a class="btn btn-primary" href="{{ url_for('jobs', keyword=kw or '', f=1) }}">Show jobs with your profile filters</a>
+  </div>
+  {% elif insights.total %}
+  <div class="inline">
+    <a class="btn btn-outline-secondary" href="{{ url_for('jobs', keyword=kw or '', f=1) }}">Browse jobs in this scope</a>
+  </div>
+  {% endif %}
 </section>
 {% endif %}
 
@@ -206,7 +233,11 @@
     {% for row in insights.top_companies %}
     {{ bar(row, url_for('jobs', company=row.label, keyword=kw, f=1) if row.label != '(unknown)' else None) }}
     {% else %}
-    <p class="muted">No jobs yet. <a href="{{ url_for('jobs', scan=1) }}">Start a scan</a>.</p>
+    <div class="empty-state">
+      <p class="empty-title">No companies yet</p>
+      <p>Once a scan saves jobs, the top employers appear here.</p>
+      <a class="btn btn-primary" href="{{ url_for('jobs', scan=1) }}">Start a scan</a>
+    </div>
     {% endfor %}
   </section>
   <section class="panel">
@@ -214,7 +245,11 @@
     {% for row in insights.top_locations %}
     {{ bar(row, url_for('jobs', loc=row.label, keyword=kw, f=1) if row.label != '(unknown)' else None) }}
     {% else %}
-    <p class="muted">No jobs yet.</p>
+    <div class="empty-state">
+      <p class="empty-title">No locations yet</p>
+      <p>Enable cities on a scan so postings land with a place.</p>
+      <a class="btn btn-outline-secondary" href="{{ url_for('jobs', scan=1) }}">Open scan</a>
+    </div>
     {% endfor %}
   </section>
   <section class="panel">

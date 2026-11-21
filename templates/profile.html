@@ -5,7 +5,10 @@
   <div>
     <p class="kicker">You</p>
     <h1>Profile</h1>
-    <p class="muted">One saved set that Jobs, Insights and the scan form all read. Nothing leaves this machine.</p>
+    <p class="muted">One saved set that Jobs, Insights and the scan form all read. Nothing leaves this machine. These defaults prefill Jobs filters and new scans.</p>
+  </div>
+  <div class="head-actions">
+    <a class="btn btn-outline-secondary" href="{{ url_for('jobs') }}">Open Jobs</a>
   </div>
 </header>
 
@@ -49,7 +52,6 @@
     {% if profile %}
     <button type="submit" class="btn btn-outline-danger" name="action" value="clear" formnovalidate>Clear profile</button>
     {% endif %}
-    <a role="button" class="btn btn-outline-secondary" href="{{ url_for('jobs') }}">Back to Jobs</a>
   </div>
 </form>
 
@@ -60,5 +62,9 @@
     <li><strong>Insights:</strong> how many jobs in view fit your years, pay and clearance, and which certs you already hold.</li>
     <li><strong>New scan:</strong> years, minimum pay and remote are pre-filled.</li>
   </ul>
+  <div class="inline">
+    <a class="btn btn-primary" href="{{ url_for('jobs', scan=1) }}">Start a scan with these defaults</a>
+    <a class="btn btn-outline-secondary" href="{{ url_for('insights') }}">See fit on Insights</a>
+  </div>
 </section>
 {% endblock %}

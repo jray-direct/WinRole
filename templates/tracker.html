@@ -10,6 +10,10 @@
       Dates and notes live here so you can drop the spreadsheet.
     </p>
   </div>
+  <div class="head-actions">
+    <a class="btn btn-outline-secondary" href="#materials">Resumes &amp; covers</a>
+    <a class="btn btn-primary" href="{{ url_for('jobs') }}">Browse Jobs</a>
+  </div>
 </div>
 
 <div class="stats">
@@ -144,12 +148,24 @@
     </tr>
     {% else %}
     <tr>
-      <td colspan="8" class="muted">
-        {% if view == 'pipeline' %}
-          Nothing in the pipeline yet. Open a job and mark it Interested or Applied.
-        {% else %}
-          No jobs match this tracker view.
-        {% endif %}
+      <td colspan="8">
+        <div class="empty-state">
+          {% if view == 'pipeline' %}
+          <p class="empty-title">Nothing in the pipeline yet</p>
+          <p>Open a job and mark it Interested or Applied — it shows up here with dates, notes, and attachments.</p>
+          <div class="inline">
+            <a class="btn btn-primary" href="{{ url_for('jobs') }}">Browse Jobs</a>
+            <a class="btn btn-outline-secondary" href="#materials">Add a resume first</a>
+          </div>
+          {% else %}
+          <p class="empty-title">No jobs match this view</p>
+          <p>Try Pipeline, clear a filter, or browse Jobs for new leads.</p>
+          <div class="inline">
+            <a class="btn btn-outline-secondary" href="{{ url_for('tracker', view='pipeline') }}">Show pipeline</a>
+            <a class="btn btn-primary" href="{{ url_for('jobs') }}">Browse Jobs</a>
+          </div>
+          {% endif %}
+        </div>
       </td>
     </tr>
     {% endfor %}

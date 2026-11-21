@@ -1,7 +1,12 @@
 <div id="materials" class="materials-block">
-  <h2>Resumes &amp; cover letters</h2>
-  <p class="muted">Attach these on a job in the table above.</p>
-  <form class="scrape-form" method="post" action="{{ url_for('materials') }}" enctype="multipart/form-data">
+  <div class="page-head">
+    <div>
+      <p class="kicker">Vault</p>
+      <h2>Resumes &amp; cover letters</h2>
+      <p class="muted">Upload versions here, then attach them on a job in the table above.</p>
+    </div>
+  </div>
+  <form class="scrape-form" method="post" action="{{ url_for('materials') }}" enctype="multipart/form-data" id="vault-upload">
     <label>Type
       <select name="kind" required class="form-select">
         <option value="resume">Resume</option>
@@ -50,7 +55,11 @@
         {% endif %}
       </article>
       {% else %}
-      <p class="muted">No resumes yet.</p>
+      <div class="empty-state">
+        <p class="empty-title">No resumes yet</p>
+        <p>Save a PDF or paste text above so you can attach it when you apply.</p>
+        <a class="btn btn-outline-secondary" href="#vault-upload">Upload a resume</a>
+      </div>
       {% endfor %}
     </section>
     <section class="panel">
@@ -80,7 +89,11 @@
         {% endif %}
       </article>
       {% else %}
-      <p class="muted">No cover letters yet.</p>
+      <div class="empty-state">
+        <p class="empty-title">No cover letters yet</p>
+        <p>Keep a few variants in the vault and pick one per application.</p>
+        <a class="btn btn-outline-secondary" href="#vault-upload">Add a cover letter</a>
+      </div>
       {% endfor %}
     </section>
   </div>

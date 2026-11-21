@@ -18,6 +18,7 @@ from urllib.parse import urlencode
 from authlib.integrations.base_client.errors import OAuthError
 from authlib.integrations.flask_client import OAuth
 from flask import Flask, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for
+from markupsafe import Markup, escape
 from werkzeug.utils import secure_filename
 
 from db import (
@@ -727,9 +728,15 @@ def _tracker_fields() -> dict[str, Any]:
 def job_status(job_id: int):
     try:
         update_job_tracker(_uid(), job_id, _tracker_fields())
-        flash("Tracker saved.")
+        tracker_url = url_for("tracker")
+        flash(
+            Markup(
+                f'Tracker saved. <a href="{escape(tracker_url)}">View in Tracker</a>'
+            ),
+            "success",
+        )
     except ValueError as exc:
-        flash(str(exc))
+        flash(str(exc), "error")
     return redirect(request.form.get("next") or request.referrer or url_for("job_detail", job_id=job_id))
 
 
@@ -738,9 +745,9 @@ def job_delete(job_id: int):
     title = (request.form.get("title") or "").strip()
     try:
         delete_job(_uid(), job_id)
-        flash(f"Deleted {title or 'job'}.")
+        flash(f"Deleted {title or 'job'}.", "success")
     except ValueError as exc:
-        flash(str(exc))
+        flash(str(exc), "error")
     return redirect(request.form.get("next") or url_for("jobs"))
 
 
@@ -829,7 +836,7 @@ def scrape_page():
 
     if request.method == "POST":
         if _scan_snapshot(_uid())["running"]:
-            flash("You already have a scan running or queued.")
+            flash("You already have a scan running or queued.", "info")
             return redirect(url_for("jobs", scan=1))
 
         salary_raw = (request.form.get("min_salary") or "").replace(",", "").strip()
@@ -841,7 +848,7 @@ def scrape_page():
         job_type = (request.form.get("job_type") or "").strip().lower()
         keyword = (request.form.get("keyword") or "").strip()
         if not keyword:
-            flash("Enter a keyword.")
+            flash("Enter a keyword.", "error")
             return redirect(url_for("jobs", scan=1))
 
         try:
@@ -849,7 +856,7 @@ def scrape_page():
             min_salary = float(salary_raw) if salary_raw else None
             days = int(days_raw) if days_raw else None
         except ValueError:
-            flash("Years, salary and days must be numbers.")
+            flash("Years, salary and days must be numbers.", "error")
             return redirect(url_for("jobs", scan=1))
 
         kw_match = (request.form.get("kw_match") or "any").strip().lower()
@@ -870,18 +877,18 @@ def scrape_page():
         )
         locations = get_enabled_locations(_uid())
         if not locations:
-            flash("Enable at least one city first.")
+            flash("Enable at least one city first.", "error")
             return redirect(url_for("jobs", scan=1))
 
         try:
             ahead = _enqueue_scan(_uid(), filters)
         except ValueError as exc:
-            flash(str(exc))
+            flash(str(exc), "error")
             return redirect(url_for("jobs", scan=1))
         if ahead:
-            flash(f"Scan for {keyword!r} queued behind {ahead} other scan(s).")
+            flash(f"Scan for {keyword!r} queued behind {ahead} other scan(s).", "info")
         else:
-            flash(f"Scan started for {keyword!r}.")
+            flash(f"Scan started for {keyword!r}.", "success")
         return redirect(url_for("jobs", scan=1))
 
     return redirect(url_for("jobs", scan=1))
@@ -1020,9 +1027,9 @@ def materials():
             body=body or None,
             is_default=request.form.get("is_default") == "1",
         )
-        flash(f"Saved {kind} {name!r}.")
+        flash(f"Saved {kind} {name!r}.", "success")
     except ValueError as exc:
-        flash(str(exc))
+        flash(str(exc), "error")
     return redirect(url_for("tracker") + "#materials")
 
 
@@ -1030,9 +1037,9 @@ def materials():
 def materials_default(material_id: int):
     try:
         set_default_material(_uid(), material_id)
-        flash("Default updated.")
+        flash("Default updated.", "success")
     except ValueError as exc:
-        flash(str(exc))
+        flash(str(exc), "error")
     return redirect(url_for("tracker") + "#materials")
 
 
@@ -1040,9 +1047,9 @@ def materials_default(material_id: int):
 def materials_delete(material_id: int):
     try:
         delete_material(_uid(), material_id)
-        flash("Deleted from vault.")
+        flash("Deleted from vault.", "success")
     except ValueError as exc:
-        flash(str(exc))
+        flash(str(exc), "error")
     return redirect(url_for("tracker") + "#materials")
 
 
@@ -1085,7 +1092,10 @@ def profile_page():
     if request.method == "POST":
         if request.form.get("action") == "clear":
             clear_profile(_uid())
-            flash("Profile cleared. Jobs, Insights and the scan form no longer use it.")
+            flash(
+                "Profile cleared. Jobs, Insights and the scan form no longer use it.",
+                "info",
+            )
             return redirect(url_for("profile_page"))
         try:
             save_profile(
@@ -1096,9 +1106,16 @@ def profile_page():
                 min_pay=request.form.get("min_pay"),
                 remote_pref=request.form.get("remote_pref") or "any",
             )
-            flash("Profile saved.")
+            jobs_url = url_for("jobs")
+            flash(
+                Markup(
+                    f'Profile saved. These defaults prefill Jobs filters and new scans. '
+                    f'<a href="{escape(jobs_url)}">Open Jobs</a>'
+                ),
+                "success",
+            )
         except ValueError as exc:
-            flash(str(exc))
+            flash(str(exc), "error")
             return redirect(url_for("profile_page"))
         nxt = (request.form.get("next") or "").strip()
         return redirect(nxt if nxt.startswith("/") else url_for("profile_page"))

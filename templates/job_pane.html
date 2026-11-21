@@ -19,9 +19,17 @@
     <span>{{ job.job_type or "type n/a" }}</span>
     <span{% if job.pay_hint %} title="{{ job.pay_hint }}"{% endif %}>{{ job.pay_label if job.pay_label != "—" else "Pay not listed" }}{% if job.pay_estimated %} <em class="est">Indeed estimate</em>{% endif %}</span>
   </div>
+  {% set tracked = job.status and job.status not in ('new', 'none', '') %}
   <div class="inline pane-actions">
-    {% if job.posting_url %}
-    <a role="button" class="btn btn-primary" href="{{ job.posting_url }}" target="_blank" rel="noopener">{{ job.posting_label }}</a>
+    {% if tracked %}
+      {% if job.posting_url %}
+      <a role="button" class="btn btn-primary" href="{{ job.posting_url }}" target="_blank" rel="noopener">{{ job.posting_label }}</a>
+      {% endif %}
+      <a role="button" class="btn btn-outline-secondary" href="{{ url_for('tracker') }}">Open tracker</a>
+    {% else %}
+      {% if job.posting_url %}
+      <a role="button" class="btn btn-outline-secondary" href="{{ job.posting_url }}" target="_blank" rel="noopener">{{ job.posting_label }}</a>
+      {% endif %}
     {% endif %}
     <a role="button" class="btn btn-outline-secondary" href="{{ url_for('job_detail', job_id=job.id) }}">Full page</a>
     <form class="inline" method="post" action="{{ url_for('job_delete', job_id=job.id) }}" onsubmit="return confirm('Delete this job from the database?');">
@@ -71,7 +79,12 @@
     <label class="span-2">Notes
       <textarea name="notes" rows="2" placeholder="Who you talked to, portal login, what you sent…" class="form-control">{{ job.notes or '' }}</textarea>
     </label>
-    <div class="span-2"><button type="submit" class="btn btn-primary">Save tracker</button></div>
+    <div class="span-2">
+      <button type="submit" class="btn btn-primary">{{ "Update tracker" if tracked else "Save to tracker" }}</button>
+      {% if not tracked %}
+      <span class="hint">Set status to Interested or Applied to add this job to your pipeline.</span>
+      {% endif %}
+    </div>
   </form>
   <div class="desc">{{ job.highlighted_description }}</div>
 </article>

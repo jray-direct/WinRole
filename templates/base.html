@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>{% block title %}JobScraper{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='bootstrap.min.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=28">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=31">
 </head>
 <body class="{% block body_class %}{% endblock %}">
   <header class="app-bar">
@@ -16,7 +19,7 @@
       </ul>
       <ul>
         <li><a href="{{ url_for('insights') }}" {% if endpoint == 'insights' %}aria-current="page"{% endif %}>Insights</a></li>
-        <li><a href="{{ url_for('jobs') }}" {% if endpoint in ('jobs', 'scrape_page', 'cities') %}aria-current="page"{% endif %}>Jobs</a></li>
+        <li><a href="{{ url_for('jobs') }}" {% if endpoint == 'jobs' %}aria-current="page"{% endif %}>Jobs</a></li>
         <li><a href="{{ url_for('tracker') }}" {% if endpoint in ('tracker', 'materials') %}aria-current="page"{% endif %}>Tracker</a></li>
         <li><a href="{{ url_for('profile_page') }}" {% if endpoint == 'profile_page' %}aria-current="page"{% endif %}>Profile</a></li>
         {% if user_email %}
@@ -27,10 +30,12 @@
     </nav>
   </header>
   <main class="{% block main_class %}container{% endblock %}">
-    {% with messages = get_flashed_messages() %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
         <ul class="flash">
-          {% for m in messages %}<li>{{ m }}</li>{% endfor %}
+          {% for category, m in messages %}
+          <li class="flash-{{ category if category in ('success', 'error', 'info', 'message') else 'info' }}">{{ m }}</li>
+          {% endfor %}
         </ul>
       {% endif %}
     {% endwith %}
