@@ -1,0 +1,291 @@
+{% extends "base.html" %}
+{% block title %}Insights · JobScraper{% endblock %}
+{% macro bar(row, href=None, cls="", show_pct=False) %}
+<div class="bar-row">
+  {% if href %}<a class="bar-label" href="{{ href }}" title="Open {{ row.label }} in Jobs">{{ row.label }}</a>
+  {% else %}<span class="bar-label" title="{{ row.label }}">{{ row.label }}</span>{% endif %}
+  <span class="bar-track"><span class="bar-fill {{ cls }}" style="width: {{ row.w if row.w is defined else row.pct }}%"></span></span>
+  <span class="bar-n">{{ row.n }}{% if show_pct %} · {{ row.pct }}%{% endif %}</span>
+</div>
+{% endmacro %}
+{% macro pay_row(label, stats, note="") %}
+<tr>
+  <td>{{ label }}{% if note %}<div class="muted small">{{ note }}</div>{% endif %}</td>
+  <td class="n">{{ stats.n }}</td>
+  <td class="n">{{ stats.p25 | usd }}</td>
+  <td class="n"><strong>{{ stats.median | usd }}</strong></td>
+  <td class="n">{{ stats.p75 | usd }}</td>
+</tr>
+{% endmacro %}
+{% block body %}
+{% set kw = insights.keyword or none %}
+<header class="page-head">
+  <div>
+    <p class="kicker">Market</p>
+    <h1>Insights{% if insights.keyword %} · {{ insights.keyword }}{% endif %}</h1>
+    <p class="muted">{{ insights.total }} jobs in this view · {{ insights.locations_enabled }}/{{ insights.locations_total }} cities on</p>
+  </div>
+  <form class="scope" method="get">
+    <label>Scope
+      <select name="keyword" onchange="this.form.submit()" class="form-select">
+        <option value="">All stored jobs</option>
+        {% for k in keywords %}
+        <option value="{{ k.keyword }}" {% if selected_keyword == k.keyword %}selected{% endif %}>
+          {{ k.keyword }} ({{ k.n }})
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+  </form>
+</header>
+
+<section class="stats">
+  <article>
+    <div class="num">{{ insights.total }}</div>
+    <div class="lbl">Jobs in scope</div>
+  </article>
+  <article>
+    <div class="num">{{ insights.remote_pct }}%</div>
+    <div class="lbl">Remote ({{ insights.remote }})</div>
+  </article>
+  <article>
+    <div class="num">{{ insights.median_salary | usd }}</div>
+    <div class="lbl">Median full-time pay{% if insights.pay_untagged.n %} (all sources){% endif %}</div>
+  </article>
+  <article>
+    <div class="num">{{ insights.salary_disclose_pct }}%</div>
+    <div class="lbl">Have pay ({{ insights.with_salary }})</div>
+  </article>
+  <article>
+    <div class="num">{{ insights.new_24h }}</div>
+    <div class="lbl">Posted in last 24h</div>
+  </article>
+  <article>
+    <div class="num">{{ insights.posted_7 }}</div>
+    <div class="lbl">Posted in 7 days</div>
+  </article>
+  <article>
+    <div class="num">{{ insights.posted_14 }}</div>
+    <div class="lbl">Posted in 14 days</div>
+  </article>
+  <article>
+    <div class="num">{{ insights.posted_30 }}</div>
+    <div class="lbl">Posted in 30 days</div>
+  </article>
+</section>
+
+{% if insights.profile %}
+<section class="panel">
+  <h2>Fit with your profile</h2>
+  {% set fit = insights.fit %}
+  <p class="muted">
+    {% if insights.profile.years is not none %}{{ '%g' % insights.profile.years }} yrs{% else %}no years set{% endif %}
+    · {{ insights.profile.min_pay | usd if insights.profile.min_pay else 'no pay floor' }}
+    · clearance {{ insights.profile.clearance | clearance_label if insights.profile.clearance != 'none' else 'none held' }}
+    · <a href="{{ url_for('profile_page') }}">edit profile</a>
+  </p>
+  <div class="stats compact">
+    <article><div class="num">{{ fit.all }}</div><div class="lbl">Meet years, pay and clearance</div></article>
+    <article><div class="num">{{ fit.years }}</div><div class="lbl">Within your years (or no number stated)</div></article>
+    <article><div class="num">{{ fit.pay }} / {{ fit.pay_known }}</div><div class="lbl">With pay at or above your floor</div></article>
+    <article><div class="num">{{ fit.clearance }}</div><div class="lbl">At or below your clearance</div></article>
+  </div>
+  <p class="muted small">Jobs with no pay listed or no stated years count as a fit, since nothing rules them out.</p>
+</section>
+{% endif %}
+
+<div class="grid two">
+  <section class="panel">
+    <h2>Pay: posted vs estimated</h2>
+    <p class="muted">Full-time-equivalent annual minimum. Hourly and daily rates are annualized here only; rows still show them as listed.</p>
+    <table class="pay-table">
+      <thead><tr><th>Source</th><th class="n">Jobs</th><th class="n">p25</th><th class="n">Median</th><th class="n">p75</th></tr></thead>
+      <tbody>
+        {{ pay_row("Employer-posted", insights.pay_posted) }}
+        {{ pay_row("Indeed estimate", insights.pay_estimate) }}
+        {{ pay_row("Saved before tagging", insights.pay_untagged, "mix of both; moves into the rows above as scans see them again") }}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Pay: remote vs on-site</h2>
+    <p class="muted">Same measure, all sources.</p>
+    <table class="pay-table">
+      <thead><tr><th>Where</th><th class="n">Jobs</th><th class="n">p25</th><th class="n">Median</th><th class="n">p75</th></tr></thead>
+      <tbody>
+        {{ pay_row("Remote", insights.pay_remote) }}
+        {{ pay_row("On-site / hybrid", insights.pay_onsite) }}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<div class="grid two">
+  <section class="panel">
+    <h2>Years of experience required</h2>
+    <p class="muted">The strictest required minimum in each posting{% if insights.keyword %}, for {{ insights.keyword }}{% endif %}.</p>
+    {% for row in insights.years %}
+    {{ bar(row, show_pct=True) }}
+    {% endfor %}
+    <div class="side-stats">
+      <span><strong>{{ insights.years_none }}</strong> state no number ({{ insights.years_none_pct }}%)</span>
+      <span><strong>{{ insights.years_pref_only }}</strong> only prefer one ({{ insights.years_pref_only_pct }}%)</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Cert stack</h2>
+    <p class="muted">{% if insights.keyword %}Other certs and tools asked for alongside {{ insights.keyword }}.{% else %}Share of jobs that ask for each cert or tool.{% endif %} “No Security+ required” is not counted. Click a bar to open those jobs.{% if insights.profile %} Certs you hold are marked.{% endif %}</p>
+    {% for row in insights.cert_stack %}
+    <div class="bar-row">
+      <a class="bar-label" href="{{ url_for('jobs', cert=row.label, keyword=kw, f=1) }}">{{ row.label }}{% if row.held %} <span class="held" title="You hold this">✓</span>{% endif %}</a>
+      <span class="bar-track"><span class="bar-fill" style="width: {{ row.w }}%"></span></span>
+      <span class="bar-n">{{ row.n }} · {{ row.pct }}%</span>
+    </div>
+    {% endfor %}
+  </section>
+</div>
+
+<div class="grid two">
+  <section class="panel">
+    <h2>Required vs preferred</h2>
+    {% if insights.keyword %}
+    <p class="muted">How {{ insights.keyword }} is framed, among the {{ insights.heat_with }} jobs that mention it.</p>
+    {% if insights.heat_with %}
+    <div class="stack" aria-label="Required vs preferred">
+      {% for row in insights.heat %}
+      {% if row.n %}
+      <span class="stack-seg stance-{{ row.key }}" style="width: {{ row.pct }}%" title="{{ row.label }} {{ row.n }}"></span>
+      {% endif %}
+      {% endfor %}
+    </div>
+    <ul class="legend">
+      {% for row in insights.heat %}
+      <li><span class="swatch stance-{{ row.key }}"></span> {{ row.label }} · {{ row.n }} ({{ row.pct }}%)</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <div class="side-stats">
+      <span><strong>{{ insights.heat_absent }}</strong> do not mention it ({{ insights.heat_absent_pct }}% of jobs in view)</span>
+    </div>
+    {% else %}
+    <p class="muted">Pick a keyword above to see required vs preferred vs “or equivalent.”</p>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>Clearance climate</h2>
+    <p class="muted">Highest level detected, among the {{ insights.clearance_with }} jobs that say anything about clearance.</p>
+    {% if insights.clearance_with %}
+    <div class="stack">
+      {% for row in insights.clearance %}
+      {% if row.n %}
+      <span class="stack-seg clr-{{ row.key }}" style="width: {{ row.pct }}%" title="{{ row.label }} {{ row.n }}"></span>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% for row in insights.clearance %}
+    <div class="bar-row">
+      <span class="bar-label"><span class="swatch clr-{{ row.key }}"></span> {{ row.label }}</span>
+      <span class="bar-track"><span class="bar-fill clr-{{ row.key }}" style="width: {{ row.pct }}%"></span></span>
+      <span class="bar-n">{{ row.n }} · {{ row.pct }}%</span>
+    </div>
+    {% endfor %}
+    {% endif %}
+    <div class="side-stats">
+      <span><strong>{{ insights.clearance_unspecified }}</strong> do not mention clearance ({{ insights.clearance_unspecified_pct }}% of jobs in view)</span>
+    </div>
+    <p class="muted small">TS/SCI beats Top Secret beats Secret. “Must have a clearance” with no level counts as not mentioned. “No clearance required” is none required.</p>
+  </section>
+</div>
+
+<div class="grid two">
+  <section class="panel">
+    <h2>Top companies</h2>
+    {% for row in insights.top_companies %}
+    {{ bar(row, url_for('jobs', company=row.label, keyword=kw, f=1) if row.label != '(unknown)' else None) }}
+    {% else %}
+    <p class="muted">No jobs yet. <a href="{{ url_for('jobs', scan=1) }}">Start a scan</a>.</p>
+    {% endfor %}
+  </section>
+  <section class="panel">
+    <h2>Top locations</h2>
+    {% for row in insights.top_locations %}
+    {{ bar(row, url_for('jobs', loc=row.label, keyword=kw, f=1) if row.label != '(unknown)' else None) }}
+    {% else %}
+    <p class="muted">No jobs yet.</p>
+    {% endfor %}
+  </section>
+  <section class="panel">
+    <h2>Industries</h2>
+    {% for row in insights.industries %}
+    {{ bar(row) }}
+    {% endfor %}
+    <div class="side-stats">
+      <span><strong>{{ insights.industry_unspecified }}</strong> list no industry ({{ insights.industry_unspecified_pct }}%)</span>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Job type</h2>
+    {% for row in insights.job_types %}
+    {{ bar(row) }}
+    {% endfor %}
+    <div class="side-stats">
+      <span><strong>{{ insights.job_type_unspecified }}</strong> list no type ({{ insights.job_type_unspecified_pct }}%)</span>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Pipeline</h2>
+    <p class="muted">Where the jobs in view sit in your tracker.</p>
+    {% for row in insights.statuses %}
+    {{ bar(row, url_for('jobs', status=row.key, keyword=kw, f=1), show_pct=True) }}
+    {% endfor %}
+  </section>
+  <section class="panel">
+    <h2>Scan overlap</h2>
+    <p class="muted">Jobs found by more than one scan keyword (deleting a scan removes these too).</p>
+    <table class="pay-table">
+      <thead><tr><th>Keyword</th><th class="n">Jobs</th><th class="n">Also in another scan</th></tr></thead>
+      <tbody>
+        {% for row in insights.keyword_overlap %}
+        <tr>
+          <td><a href="{{ url_for('jobs', keyword=row.label, f=1) }}">{{ row.label }}</a></td>
+          <td class="n">{{ row.n }}</td>
+          <td class="n">{{ row.overlap }} · {{ row.pct }}%</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" class="muted">No saved scans yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<section class="panel">
+  <h2>Recent runs</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>Keyword</th><th>Started</th><th>Matched</th>
+        <th>New</th><th>Updated</th><th>Saved</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in insights.recent_runs %}
+      <tr>
+        <td>{{ run.id }}</td>
+        <td>{{ run.keyword }}</td>
+        <td title="{{ run.started_at }} UTC">{{ run.started_at | ago }}</td>
+        <td class="n">{{ run.matched }}</td>
+        <td class="n">{{ run.inserted }}</td>
+        <td class="n">{{ run.updated }}</td>
+        <td class="n">{{ run.filtered }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted">No scrapes recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

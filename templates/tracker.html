@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Tracker · JobScraper{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div>
+    <p class="kicker">Applications</p>
+    <h1>Tracker</h1>
+    <p class="muted">
+      {{ total }} in this view{% if shown < total %} · showing first {{ shown }}{% endif %}.
+      Dates and notes live here so you can drop the spreadsheet.
+    </p>
+  </div>
+</div>
+
+<div class="stats">
+  <article>
+    <div class="num">{{ summary.pipeline }}</div>
+    <div class="lbl">In pipeline</div>
+  </article>
+  <article>
+    <div class="num">{{ summary.applied_7d }}</div>
+    <div class="lbl">Applied this week</div>
+  </article>
+  <article>
+    <div class="num{% if summary.overdue %} err{% endif %}">{{ summary.overdue }}</div>
+    <div class="lbl">Follow-ups overdue</div>
+  </article>
+  <article>
+    <div class="num">{{ summary.waiting }}</div>
+    <div class="lbl">Waiting on a reply</div>
+  </article>
+  <article>
+    <div class="num">{{ summary.interviewing }}</div>
+    <div class="lbl">Interviewing</div>
+  </article>
+</div>
+
+<form class="filters" method="get">
+  <label>View
+    <select name="view" class="form-select">
+      <option value="pipeline" {% if view == 'pipeline' %}selected{% endif %}>Pipeline</option>
+      <option value="overdue" {% if view == 'overdue' %}selected{% endif %}>Overdue follow-ups</option>
+      <option value="all" {% if view == 'all' %}selected{% endif %}>All tracked jobs</option>
+    </select>
+  </label>
+  <label>Status
+    <select name="status" class="form-select">
+      <option value="">Any</option>
+      {% for s in statuses %}
+      <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s | status_label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Heard back
+    <select name="heard_back" class="form-select">
+      <option value="">Any</option>
+      {% for value, label in heard_back %}
+      <option value="{{ value }}" {% if filters.heard_back == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Keyword
+    <select name="keyword" class="form-select">
+      <option value="">Any scan</option>
+      {% for k in keywords %}
+      <option value="{{ k.keyword }}" {% if filters.keyword == k.keyword %}selected{% endif %}>
+        {{ k.keyword }} ({{ k.n }})
+      </option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Search
+    <input type="text" name="q" value="{{ filters.q }}" placeholder="title or company" class="form-control">
+  </label>
+  <label>Sort
+    <select name="order" class="form-select">
+      <option value="follow_up" {% if filters.order == 'follow_up' %}selected{% endif %}>Follow-up date</option>
+      <option value="applied" {% if filters.order == 'applied' %}selected{% endif %}>Applied date</option>
+      <option value="date" {% if filters.order == 'date' %}selected{% endif %}>Posted date</option>
+      <option value="company" {% if filters.order == 'company' %}selected{% endif %}>Company</option>
+    </select>
+  </label>
+  <button type="submit" class="btn btn-primary">Apply</button>
+</form>
+
+<div class="tracker-wrap">
+<table class="jobs tracker">
+  <thead>
+    <tr>
+      <th>Job</th>
+      <th>Status</th>
+      <th>Applied</th>
+      <th>Follow up</th>
+      <th>Heard back</th>
+      <th>Resume / cover</th>
+      <th>Notes</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for job in jobs %}
+    <tr class="{% if job.overdue %}overdue{% endif %}">
+      <td>
+        <a href="{{ url_for('job_detail', job_id=job.id, keyword=filters.keyword) }}">{{ job.title or '(no title)' }}</a>
+        <div class="muted">{{ job.company or "Unknown" }}{% if job.location %} · {{ job.location }}{% endif %}</div>
+        {% if job.pay_label %}<div class="muted">{{ job.pay_label }}</div>{% endif %}
+      </td>
+      <td colspan="7">
+        <form class="tracker-row" method="post" action="{{ url_for('job_status', job_id=job.id) }}">
+          <input type="hidden" name="next" value="{{ request.full_path }}">
+          <select name="status" aria-label="Status" class="form-select">
+            {% for s in statuses %}
+            <option value="{{ s }}" {% if job.status == s %}selected{% endif %}>{{ s | status_label }}</option>
+            {% endfor %}
+          </select>
+          <input type="date" name="applied_on" value="{{ job.applied_on or '' }}" aria-label="Applied on" class="form-control">
+          <input type="date" name="follow_up_on" value="{{ job.follow_up_on or '' }}" aria-label="Follow up on" class="form-control">
+          <select name="heard_back" aria-label="Heard back" class="form-select">
+            {% for value, label in heard_back %}
+            <option value="{{ value }}" {% if job.heard_back == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <select name="resume_id" aria-label="Resume" class="form-select">
+            <option value="">Resume</option>
+            {% for m in resumes %}
+            <option value="{{ m.id }}" {% if job.resume_id == m.id %}selected{% endif %}>{{ m.name }}</option>
+            {% endfor %}
+          </select>
+          <select name="cover_id" aria-label="Cover letter" class="form-select">
+            <option value="">Cover</option>
+            {% for m in covers %}
+            <option value="{{ m.id }}" {% if job.cover_id == m.id %}selected{% endif %}>{{ m.name }}</option>
+            {% endfor %}
+          </select>
+          <input type="text" name="notes" value="{{ job.notes or '' }}" placeholder="Notes" class="form-control">
+          <button type="submit" class="btn btn-primary">Save</button>
+        </form>
+        <form class="inline danger-form" method="post" action="{{ url_for('job_delete', job_id=job.id) }}" onsubmit="return confirm('Delete this job from the database?');">
+          <input type="hidden" name="title" value="{{ job.title or '' }}">
+          <input type="hidden" name="next" value="{{ url_for('tracker', **request.args) }}">
+          <button type="submit" class="danger btn btn-outline-danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr>
+      <td colspan="8" class="muted">
+        {% if view == 'pipeline' %}
+          Nothing in the pipeline yet. Open a job and mark it Interested or Applied.
+        {% else %}
+          No jobs match this tracker view.
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% include "_materials_panel.html" %}
+{% endblock %}

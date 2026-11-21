@@ -1,0 +1,34 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Secrets — never commit Cognito/client credentials
+cognito_secret.txt
+.env
+.env.*
+!.env.example
+
+# Local databases and backups
+*.db
+*.db-*
+*.db.bak*
+
+# User uploads and scrape output
+materials/
+output/
+_scratch/
+
+# One-off scrape dumps in the project root
+*.csv
+*.json
+!requirements.txt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

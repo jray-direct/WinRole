@@ -1,0 +1,77 @@
+<article class="job-pane-body">
+  <h2>{{ job.title or "(no title)" }}</h2>
+  <p class="lead">{{ job.company or "Unknown company" }} · {{ job.location or "Unknown location" }}{% if job.company_rating %} · <span title="Company rating{% if job.company_reviews_count %}, {{ job.company_reviews_count }} reviews{% endif %}">★ {{ '%.1f' % job.company_rating }}</span>{% endif %}</p>
+  <div class="chips">
+    {% for chip in job.years_chips %}
+    <span class="badge years-{{ chip.kind }}" title="{{ chip.title }}">{{ chip.text }}</span>
+    {% endfor %}
+    {% if job.is_remote %}<span class="badge remote">Remote</span>{% endif %}
+    {% if job.clearance and job.clearance != 'unspecified' %}
+    <span class="badge clr-{{ job.clearance }}">{{ job.clearance_label }}</span>
+    {% endif %}
+    {% if job.stance %}<span class="badge stance">{{ job.stance }}</span>{% endif %}
+    {% for cert in job.certs %}
+    <span class="badge cert">{{ cert }}</span>
+    {% endfor %}
+  </div>
+  <div class="meta">
+    <span>Posted {{ job.date_posted or "—" }}</span>
+    <span>{{ job.job_type or "type n/a" }}</span>
+    <span{% if job.pay_hint %} title="{{ job.pay_hint }}"{% endif %}>{{ job.pay_label if job.pay_label != "—" else "Pay not listed" }}{% if job.pay_estimated %} <em class="est">Indeed estimate</em>{% endif %}</span>
+  </div>
+  <div class="inline pane-actions">
+    {% if job.posting_url %}
+    <a role="button" class="btn btn-primary" href="{{ job.posting_url }}" target="_blank" rel="noopener">{{ job.posting_label }}</a>
+    {% endif %}
+    <a role="button" class="btn btn-outline-secondary" href="{{ url_for('job_detail', job_id=job.id) }}">Full page</a>
+    <form class="inline" method="post" action="{{ url_for('job_delete', job_id=job.id) }}" onsubmit="return confirm('Delete this job from the database?');">
+      <input type="hidden" name="title" value="{{ job.title or '' }}">
+      <input type="hidden" name="next" value="{{ url_for('jobs', keyword=job.keywords[0] if job.keywords else '') }}">
+      <button type="submit" class="danger btn btn-outline-danger">Delete job</button>
+    </form>
+  </div>
+  <form class="pane-tracker" method="post" action="{{ url_for('job_status', job_id=job.id) }}">
+    <input type="hidden" name="next" value="{{ return_to }}">
+    <label>Status
+      <select name="status" class="form-select">
+        {% for s in statuses %}
+        <option value="{{ s }}" {% if job.status == s %}selected{% endif %}>{{ s | status_label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Applied
+      <input type="date" name="applied_on" value="{{ job.applied_on or '' }}" class="form-control">
+    </label>
+    <label>Follow up
+      <input type="date" name="follow_up_on" value="{{ job.follow_up_on or '' }}" class="form-control">
+    </label>
+    <label>Heard back
+      <select name="heard_back" class="form-select">
+        {% for value, label in heard_back %}
+        <option value="{{ value }}" {% if (job.heard_back or 'none') == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Resume
+      <select name="resume_id" class="form-select">
+        <option value="">None</option>
+        {% for m in resumes %}
+        <option value="{{ m.id }}" {% if job.resume_id == m.id %}selected{% endif %}>{{ m.name }}{% if m.is_default %} (default){% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Cover letter
+      <select name="cover_id" class="form-select">
+        <option value="">None</option>
+        {% for m in covers %}
+        <option value="{{ m.id }}" {% if job.cover_id == m.id %}selected{% endif %}>{{ m.name }}{% if m.is_default %} (default){% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="span-2">Notes
+      <textarea name="notes" rows="2" placeholder="Who you talked to, portal login, what you sent…" class="form-control">{{ job.notes or '' }}</textarea>
+    </label>
+    <div class="span-2"><button type="submit" class="btn btn-primary">Save tracker</button></div>
+  </form>
+  <div class="desc">{{ job.highlighted_description }}</div>
+</article>

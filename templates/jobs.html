@@ -1,0 +1,619 @@
+{% extends "base.html" %}
+{% from "_macros.html" import templated_field %}
+{% block title %}Jobs · JobScraper{% endblock %}
+{% block body_class %}split-jobs{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block body %}
+{% set list_qs = request.args.to_dict() %}
+{% if list_qs.pop('job', None) is not none %}{% endif %}
+{% if list_qs.pop('scan', None) is not none %}{% endif %}
+{% if list_qs.pop('page', None) is not none %}{% endif %}
+{% if list_qs.pop('partial', None) is not none %}{% endif %}
+<div class="jobs-head">
+  <h1>Jobs <span class="muted">{% if total %}<span id="jobs-shown">{{ jobs|length }}</span> of {{ total }}{% else %}0{% endif %}</span></h1>
+  <div class="inline">
+    {% if state.running %}<span class="pill">Scan running</span>{% endif %}
+    <button type="button" class="btn btn-outline-secondary" id="open-delete">Delete scan</button>
+    <button type="button" id="open-scan" class="btn btn-primary">{{ "View scan" if state.running else "New scan" }}</button>
+  </div>
+</div>
+
+<div class="modal-backdrop{% if scan_open %} open{% endif %}" id="scan-modal" {% if not scan_open %}hidden{% endif %}>
+  <div class="scan-modal" role="dialog" aria-modal="true" aria-labelledby="scan-title">
+    <div class="modal-head">
+      <h2 id="scan-title">{{ "Scan running…" if state.running else "New scan" }}</h2>
+      <button type="button" class="modal-close btn btn-outline-secondary" id="close-scan" aria-label="Close">×</button>
+    </div>
+    <div class="scan-wait" role="status" {% if not state.running %}hidden{% endif %}>
+      <div class="spinner" aria-hidden="true"></div>
+      <p>This may take a minute or two...</p>
+    </div>
+    <div class="scan-setup" {% if state.running %}hidden{% endif %}>
+    <p class="muted">Only jobs that pass these filters are saved. Cities below are searched on this run.</p>
+    <form method="post" action="{{ url_for('scrape_page') }}" class="scrape-form compact-filters">
+      <label>Keyword
+        <input type="text" id="scan-keyword" name="keyword" required placeholder="Network+" class="form-control">
+      </label>
+      <div class="title-filters">
+        {{ templated_field("title_include", "title_include", "", templates.title_include, "Title includes", "analyst, engineer", "form") }}
+        {{ templated_field("title_exclude", "title_exclude", "", templates.title_exclude, "Title excludes", "senior, lead, intern", "form") }}
+      </div>
+      <label class="check">
+        <input type="checkbox" name="remote" value="1" {% if profile and profile.remote_pref == 'remote' %}checked{% endif %} class="form-check-input"> Remote only
+      </label>
+      <label>Min annual salary
+        <input type="number" name="min_salary" placeholder="60000" value="{{ '%.0f' % profile.min_pay if profile and profile.min_pay else '' }}" class="form-control">
+        <span class="hint">Jobs that list no pay are kept.</span>
+      </label>
+      <label>I have N years
+        <input type="number" name="my_years" min="0" max="60" step="0.5" placeholder="3" value="{{ '%g' % profile.years if profile and profile.years is not none else '' }}" class="form-control">
+        <span class="hint">Skips jobs that require more. No stated number? Kept.</span>
+      </label>
+      <label>Posted within N days
+        <input type="number" name="days" placeholder="14" class="form-control">
+      </label>
+      {{ templated_field("exclude", "exclude", "", templates.exclude, "Exclude in posting", "secret clearance, relocation", "form") }}
+      <label>Job type
+        <select name="job_type" class="form-select">
+          <option value="">Any</option>
+          {% for t in job_types %}
+          <option value="{{ t }}">{{ t | job_type_label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit" {% if state.running %}disabled{% endif %} class="btn btn-primary">
+        {{ "Running…" if state.running else "Start scan" }}
+      </button>
+    </form>
+    {% if state.result %}
+    <p class="ok">
+      Last run #{{ state.result.run_id }}: {{ state.result.matched }} keyword hits,
+      {{ state.result.filtered }} saved ({{ state.result.inserted }} new).
+    </p>
+    {% endif %}
+    {% if state.error %}
+    <p class="err">{{ state.error }}</p>
+    {% endif %}
+    <h3>Cities</h3>
+    {% include "_cities_panel.html" %}
+    <div class="page-head">
+      <h3>Log</h3>
+      <form method="post" action="{{ url_for('scrape_clear_log') }}">
+        <button type="submit" class="btn btn-outline-secondary" {% if state.running %}disabled{% endif %}>Clear log</button>
+      </form>
+    </div>
+    <pre id="log" class="log">{% for line in state.log %}{{ line }}
+{% endfor %}</pre>
+    </div>
+  </div>
+</div>
+
+{% if profile_defaults or active_filters %}
+<div class="active-filters">
+  {% if profile_defaults %}
+  <span class="pill">From your profile: {{ profile_defaults | join(" · ") }}</span>
+  <a href="{{ defaults_off_url }}">Turn off</a>
+  <a href="{{ url_for('profile_page') }}">Edit profile</a>
+  {% endif %}
+  {% for chip in active_filters %}
+  <span class="pill">{{ chip.label }} <a href="{{ chip.clear_url }}" aria-label="Remove filter">×</a></span>
+  {% endfor %}
+</div>
+{% endif %}
+<form class="filter-bar" id="job-filters" method="get">
+  <input type="hidden" name="f" value="1">
+  {% if suppress_profile %}<input type="hidden" name="defaults" value="0">{% endif %}
+  {% for key in ('company', 'loc', 'cert') %}
+  {% if filters[key] %}<input type="hidden" name="{{ key }}" value="{{ filters[key] }}">{% endif %}
+  {% endfor %}
+  {% if filters.title_include %}<input type="hidden" data-filter-mirror name="title_include" value="{{ filters.title_include }}">{% endif %}
+  {% if filters.exclude_keywords %}<input type="hidden" data-filter-mirror name="exclude" value="{{ filters.exclude_keywords }}">{% endif %}
+  {% if filters.job_type %}<input type="hidden" data-filter-mirror name="job_type" value="{{ filters.job_type }}">{% endif %}
+  {% if filters.status %}<input type="hidden" data-filter-mirror name="status" value="{{ filters.status }}">{% endif %}
+  {% if filters.clearance %}<input type="hidden" data-filter-mirror name="clearance" value="{{ filters.clearance }}">{% endif %}
+  {% if filters.posted_within_days %}<input type="hidden" data-filter-mirror name="days" value="{{ filters.posted_within_days }}">{% endif %}
+  {% if filters.hide_nopay %}<input type="hidden" data-filter-mirror name="hide_nopay" value="1">{% endif %}
+  {% if filters.show_closed %}<input type="hidden" data-filter-mirror name="closed" value="1">{% endif %}
+  {% if salary_explicit %}<input type="hidden" data-filter-mirror name="min_salary" value="{{ filters.min_salary }}">{% endif %}
+  {% if years_explicit %}<input type="hidden" data-filter-mirror name="my_years" value="{{ filters.my_years }}">{% endif %}
+  {% if remote_explicit and filters.remote_only %}<input type="hidden" data-filter-mirror name="remote" value="1">{% endif %}
+  {% if remote_explicit %}<input type="hidden" data-filter-mirror name="remote_set" value="1">{% endif %}
+  <div class="filter-main">
+    <select name="keyword" aria-label="Scan" class="form-select">
+      <option value="">Any scan</option>
+      {% for k in keywords %}
+      <option value="{{ k.keyword }}" {% if filters.keyword == k.keyword %}selected{% endif %}>{{ k.keyword }} ({{ k.n }})</option>
+      {% endfor %}
+    </select>
+    <input type="search" name="q" value="{{ filters.q }}" placeholder="Search title, company, location, description" aria-label="Search" class="form-control">
+    {{ templated_field("title_exclude", "title_exclude", filters.title_exclude, templates.title_exclude, "Title excludes", "Exclude from title", "filter", false, true) }}
+    <select name="order" aria-label="Sort" class="form-select">
+      {% for value, label in sort_options %}
+      <option value="{{ value }}" {% if filters.order == value %}selected{% endif %}>Sort: {{ label }}</option>
+      {% endfor %}
+    </select>
+    <button type="button" class="btn btn-outline-secondary{% if extra_count %} filters-on{% endif %}" id="toggle-more" aria-expanded="false" aria-controls="filter-more" data-more="More filters{% if extra_count %} · {{ extra_count }}{% endif %}">
+      More filters{% if extra_count %} · {{ extra_count }}{% endif %}
+    </button>
+    <button type="submit" class="btn btn-primary">Apply</button>
+  </div>
+  <div class="filter-more is-closed" id="filter-more" inert>
+    <div class="filter-more-grid">
+      {{ templated_field("title_include", "title_include", filters.title_include, templates.title_include, "Title includes", "analyst, engineer", "filter", false, true) }}
+      {{ templated_field("exclude", "exclude", filters.exclude_keywords, templates.exclude, "Exclude in posting", "secret clearance", "filter", false, true) }}
+      <label class="filter-inline">
+        Type
+        <select name="job_type" class="form-select" aria-label="Job type">
+          <option value="">Any</option>
+          {% for t in job_types %}
+          <option value="{{ t }}" {% if filters.job_type == t %}selected{% endif %}>{{ t | job_type_label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="filter-inline">
+        Status
+        <select name="status" class="form-select" aria-label="Status">
+          <option value="">Any</option>
+          {% for s in statuses %}
+          <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s | status_label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="filter-inline">
+        Clearance
+        <select name="clearance" class="form-select" aria-label="Clearance">
+          <option value="">Any</option>
+          {% for key in clearance_options %}
+          <option value="{{ key }}" {% if filters.clearance == key %}selected{% endif %}>{{ key | clearance_label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="filter-inline" title="Drops jobs below this. Jobs with no pay listed stay.">
+        Min salary
+        <input type="number" name="min_salary" value="{{ filters.min_salary }}" placeholder="60000" class="form-control" aria-label="Minimum salary">
+      </label>
+      <label class="filter-inline" title="Drops jobs that require more years than this. Jobs that don't state a number stay.">
+        Years I have
+        <input type="number" name="my_years" min="0" max="60" step="0.5" value="{{ filters.my_years }}" placeholder="3" class="form-control" aria-label="Years of experience I have">
+      </label>
+      <label class="filter-inline">
+        Posted within
+        <input type="number" name="days" value="{{ filters.posted_within_days }}" placeholder="14" min="1" class="form-control days-input" aria-label="Posted within days">
+        <span>days</span>
+      </label>
+    </div>
+    <div class="filter-toggles">
+      <input type="hidden" name="remote_set" value="1">
+      <label class="check">
+        <input type="checkbox" name="remote" value="1" {% if filters.remote_only %}checked{% endif %} class="form-check-input">
+        Remote only
+      </label>
+      <label class="check" title="Hide jobs that don't list a salary">
+        <input type="checkbox" name="hide_nopay" value="1" {% if filters.hide_nopay %}checked{% endif %} class="form-check-input">
+        Must list pay
+      </label>
+      <label class="check">
+        <input type="checkbox" name="closed" value="1" {% if filters.show_closed %}checked{% endif %} class="form-check-input">
+        Show ignored &amp; applied
+      </label>
+    </div>
+  </div>
+</form>
+
+<div class="modal-backdrop" id="delete-modal" hidden>
+  <div class="scan-modal narrow" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+    <div class="modal-head">
+      <h2 id="delete-title">Delete a scan</h2>
+      <button type="button" class="modal-close btn btn-outline-secondary" id="close-delete" aria-label="Close">×</button>
+    </div>
+    <p class="muted">Jobs found only by that scan are deleted. Jobs that also matched another scan stay.</p>
+    <ul class="delete-list">
+      {% for k in keywords %}
+      {% set shared = (k.overlap or 0)|int %}
+      {% set exclusive = (k.n or 0)|int - shared %}
+      <li class="delete-row">
+        <div class="delete-copy">
+          <strong class="idle-text">{{ k.keyword }}</strong>
+          <span class="delete-meta idle-text">
+            {{ k.n }} job{{ 's' if k.n != 1 else '' }}{% if shared %} · {{ shared }} also in another scan{% endif %}
+          </span>
+          <span class="confirm-text">
+            {% if exclusive %}
+            Delete {{ exclusive }} job{{ 's' if exclusive != 1 else '' }} from “{{ k.keyword }}”?{% if shared %} {{ shared }} shared stay.{% endif %}
+            {% else %}
+            Remove “{{ k.keyword }}”? All {{ k.n }} job{{ 's' if k.n != 1 else '' }} stay in other scans.
+            {% endif %}
+          </span>
+        </div>
+        <div class="idle">
+          <button type="button" class="btn btn-outline-danger" data-ask-delete>{{ "Remove" if exclusive == 0 else "Delete" }}</button>
+        </div>
+        <form class="ask" method="post" action="{{ url_for('hygiene_delete_keyword') }}">
+          <input type="hidden" name="keyword" value="{{ k.keyword }}">
+          <button type="submit" class="btn btn-danger">{{ "Remove" if exclusive == 0 else "Delete" }}</button>
+          <button type="button" class="btn btn-outline-secondary" data-cancel-delete>Cancel</button>
+        </form>
+      </li>
+      {% else %}
+      <li class="muted delete-empty">No saved scans yet.</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+
+<div class="jobs-split">
+  <section class="jobs-list" aria-label="Job list">
+    {% if jobs %}
+    {% include "_job_rows.html" %}
+    {% else %}
+    <p class="muted pad">No jobs match. Start a scan or loosen filters.</p>
+    {% endif %}
+    {% if jobs|length < total %}
+    <button type="button" class="btn btn-outline-secondary load-more" id="load-more"
+            data-next="{{ url_for('jobs', partial='rows', page=2, **list_qs) }}">
+      Load more jobs
+    </button>
+    {% endif %}
+  </section>
+
+  <section class="jobs-pane" id="job-pane" aria-live="polite">
+    {% if selected_job %}
+      {% set job = selected_job %}
+      {% set return_to = request.full_path %}
+      {% include "job_pane.html" %}
+    {% else %}
+      <p class="muted pad">Select a job to read the description.</p>
+    {% endif %}
+  </section>
+</div>
+
+<script>
+  (function () {
+    const list = document.querySelector(".jobs-list");
+    const pane = document.getElementById("job-pane");
+    if (list && pane) {
+      list.addEventListener("click", async function (event) {
+        const row = event.target.closest("[data-pane]");
+        if (!row || event.metaKey || event.ctrlKey || event.shiftKey) return;
+        event.preventDefault();
+        list.querySelectorAll(".job-row.on").forEach(function (el) { el.classList.remove("on"); });
+        row.classList.add("on");
+        const next = encodeURIComponent(row.getAttribute("href"));
+        const url = row.dataset.pane + (row.dataset.pane.indexOf("?") >= 0 ? "&" : "?") + "next=" + next;
+        pane.innerHTML = "<p class='muted pad'>Loading…</p>";
+        pane.classList.remove("pane-swap");
+        try {
+          const res = await fetch(url);
+          pane.innerHTML = await res.text();
+          history.replaceState({}, "", row.getAttribute("href"));
+        } catch (err) {
+          pane.innerHTML = "<p class='err pad'>Could not load that job.</p>";
+        }
+        void pane.offsetWidth;
+        pane.classList.add("pane-swap");
+      });
+    }
+
+    const moreBtn = document.getElementById("load-more");
+    const shown = document.getElementById("jobs-shown");
+    if (moreBtn && list) {
+      moreBtn.addEventListener("click", async function () {
+        const url = moreBtn.dataset.next;
+        if (!url || moreBtn.disabled) return;
+        moreBtn.disabled = true;
+        moreBtn.textContent = "Loading…";
+        try {
+          const res = await fetch(url, { headers: { "Accept": "application/json" } });
+          if (!res.ok) throw new Error("load failed");
+          const data = await res.json();
+          moreBtn.insertAdjacentHTML("beforebegin", data.html || "");
+          if (shown) shown.textContent = String(list.querySelectorAll(".job-row").length);
+          if (data.next) {
+            moreBtn.dataset.next = data.next;
+            moreBtn.disabled = false;
+            moreBtn.textContent = "Load more jobs";
+          } else {
+            moreBtn.remove();
+          }
+        } catch (err) {
+          moreBtn.disabled = false;
+          moreBtn.textContent = "Load more jobs";
+        }
+      });
+    }
+
+    function boxOf(el) { return el.closest(".templated"); }
+    function fieldInput(el) {
+      const box = boxOf(el);
+      return box ? box.querySelector("input[name]") : null;
+    }
+    function syncClear(el) {
+      const box = boxOf(el);
+      if (!box) return;
+      const input = fieldInput(el);
+      const x = box.querySelector(".clear-x");
+      if (input && x) x.classList.toggle("hide", !(input.value || "").trim());
+    }
+    document.querySelectorAll(".template-pick").forEach(function (sel) {
+      sel.addEventListener("change", function () {
+        const input = fieldInput(sel);
+        if (!input) return;
+        input.value = sel.value;
+        syncClear(sel);
+        if (sel.dataset.mode === "filter" && sel.value) {
+          const form = sel.closest("form");
+          if (form) form.submit();
+        }
+      });
+    });
+    document.querySelectorAll(".clear-x").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        const input = fieldInput(btn);
+        if (input) input.value = "";
+        const box = boxOf(btn);
+        if (box) {
+          const pick = box.querySelector(".template-pick");
+          if (pick) pick.value = "";
+        }
+        syncClear(btn);
+        if (btn.dataset.mode === "filter") {
+          const url = new URL(window.location.href);
+          url.searchParams.delete(btn.dataset.clear);
+          url.searchParams.delete("page");
+          window.location.href = url.pathname + url.search;
+        }
+      });
+    });
+    document.querySelectorAll(".tpl-save").forEach(function (btn) {
+      btn.addEventListener("click", async function () {
+        const input = fieldInput(btn);
+        const nameBox = btn.parentElement.querySelector(".tpl-name");
+        const value = (input && input.value || "").trim();
+        const name = (nameBox && nameBox.value || "").trim();
+        if (!value) { alert("Nothing to save."); return; }
+        if (!name) { alert("Name this template."); return; }
+        const body = new FormData();
+        body.append("kind", btn.dataset.kind);
+        body.append("name", name);
+        body.append("value", value);
+        const res = await fetch("{{ url_for('save_template') }}", {
+          method: "POST",
+          body: body,
+          headers: { "X-Requested-With": "fetch" },
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(function () { return {}; });
+          alert(data.error || "Could not save template.");
+          return;
+        }
+        window.location.reload();
+      });
+    });
+    document.querySelectorAll(".templated input[name]").forEach(function (input) {
+      input.addEventListener("input", function () { syncClear(input); });
+    });
+
+    const backdrop = document.getElementById("scan-modal");
+    const scanForm = backdrop ? backdrop.querySelector("form.scrape-form") : null;
+    const scanDraftKey = "jobscraper-scan-draft";
+    function saveScanDraft() {
+      if (!scanForm) return;
+      const data = {};
+      scanForm.querySelectorAll("input[name], select[name], textarea[name]").forEach(function (el) {
+        data[el.name] = el.type === "checkbox" ? el.checked : el.value;
+      });
+      sessionStorage.setItem(scanDraftKey, JSON.stringify(data));
+    }
+    function restoreScanDraft() {
+      if (!scanForm) return;
+      const raw = sessionStorage.getItem(scanDraftKey);
+      if (!raw) return;
+      let data;
+      try { data = JSON.parse(raw); } catch (err) { return; }
+      scanForm.querySelectorAll("input[name], select[name], textarea[name]").forEach(function (el) {
+        if (!Object.prototype.hasOwnProperty.call(data, el.name)) return;
+        if (el.type === "checkbox") el.checked = !!data[el.name];
+        else el.value = data[el.name] == null ? "" : data[el.name];
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    if (backdrop) {
+      backdrop.addEventListener("submit", async function (event) {
+        const form = event.target;
+        if (!form || !form.classList) return;
+        if (form.classList.contains("scrape-form")) {
+          sessionStorage.removeItem(scanDraftKey);
+          const setup = backdrop.querySelector(".scan-setup");
+          const wait = backdrop.querySelector(".scan-wait");
+          const title = document.getElementById("scan-title");
+          if (setup) setup.hidden = true;
+          if (wait) wait.hidden = false;
+          if (title) title.textContent = "Scan running…";
+          return;
+        }
+        const panel = form.closest(".cities-panel");
+        if (!panel) {
+          saveScanDraft();
+          return;
+        }
+        event.preventDefault();
+        const body = new FormData(form);
+        if (event.submitter && event.submitter.name) {
+          body.append(event.submitter.name, event.submitter.value);
+        }
+        panel.querySelectorAll("button").forEach(function (btn) { btn.disabled = true; });
+        try {
+          const res = await fetch(form.action, {
+            method: "POST",
+            body: body,
+            headers: { "X-Requested-With": "fetch" },
+          });
+          const html = await res.text();
+          if (!res.ok) {
+            alert(html || "Could not update cities.");
+            panel.querySelectorAll("button").forEach(function (btn) { btn.disabled = false; });
+            return;
+          }
+          panel.outerHTML = html;
+        } catch (err) {
+          alert("Could not update cities.");
+          panel.querySelectorAll("button").forEach(function (btn) { btn.disabled = false; });
+        }
+      }, true);
+    }
+    if (backdrop && backdrop.classList.contains("open")) restoreScanDraft();
+    const openBtn = document.getElementById("open-scan");
+    const closeBtn = document.getElementById("close-scan");
+    function showModal(el, focus) {
+      if (!el) return;
+      el.removeAttribute("hidden");
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () { el.classList.add("open"); });
+      });
+      if (focus) focus.focus();
+    }
+    function hideModal(el) {
+      if (!el) return;
+      el.classList.remove("open");
+      let done = false;
+      function finish() {
+        if (done) return;
+        done = true;
+        el.setAttribute("hidden", "");
+      }
+      el.addEventListener("transitionend", function (event) {
+        if (event.target !== el || event.propertyName !== "opacity") return;
+        finish();
+      });
+      setTimeout(finish, 320);
+    }
+    function openScan() {
+      showModal(backdrop, document.getElementById("scan-keyword"));
+    }
+    function closeScan() {
+      hideModal(backdrop);
+    }
+    if (openBtn) openBtn.addEventListener("click", openScan);
+    if (closeBtn) closeBtn.addEventListener("click", closeScan);
+    if (backdrop) {
+      backdrop.addEventListener("click", function (event) {
+        if (event.target === backdrop) closeScan();
+      });
+    }
+    const deleteBackdrop = document.getElementById("delete-modal");
+    const openDelete = document.getElementById("open-delete");
+    const closeDeleteBtn = document.getElementById("close-delete");
+    function clearDeleteConfirm() {
+      if (!deleteBackdrop) return;
+      deleteBackdrop.querySelectorAll(".delete-row.is-confirm").forEach(function (row) {
+        row.classList.remove("is-confirm");
+      });
+    }
+    function openDeleteModal() {
+      clearDeleteConfirm();
+      showModal(deleteBackdrop);
+    }
+    function closeDeleteModal() {
+      clearDeleteConfirm();
+      hideModal(deleteBackdrop);
+    }
+    if (openDelete) openDelete.addEventListener("click", openDeleteModal);
+    if (closeDeleteBtn) closeDeleteBtn.addEventListener("click", closeDeleteModal);
+    if (deleteBackdrop) {
+      deleteBackdrop.addEventListener("click", function (event) {
+        const ask = event.target.closest("[data-ask-delete]");
+        if (ask) {
+          clearDeleteConfirm();
+          const row = ask.closest(".delete-row");
+          if (row) row.classList.add("is-confirm");
+          return;
+        }
+        const cancelBtn = event.target.closest("[data-cancel-delete]");
+        if (cancelBtn) {
+          const row = cancelBtn.closest(".delete-row");
+          if (row) row.classList.remove("is-confirm");
+          return;
+        }
+        if (event.target === deleteBackdrop) closeDeleteModal();
+      });
+    }
+    const more = document.getElementById("filter-more");
+    const toggleMore = document.getElementById("toggle-more");
+    const filterForm = document.getElementById("job-filters");
+    const moreKey = "jobscraper-more-filters";
+    let moreDirty = false;
+    function setMoreOpen(show) {
+      if (!more || !toggleMore) return;
+      more.classList.toggle("is-closed", !show);
+      const live = show || moreDirty;
+      more.querySelectorAll("input, select, textarea").forEach(function (el) {
+        el.disabled = !live;
+      });
+      if (filterForm) {
+        filterForm.querySelectorAll("[data-filter-mirror]").forEach(function (el) {
+          el.disabled = live;
+        });
+      }
+      toggleMore.textContent = show ? "Fewer filters" : (toggleMore.dataset.more || "More filters");
+      toggleMore.setAttribute("aria-expanded", show ? "true" : "false");
+      if (live) more.removeAttribute("inert");
+      else more.setAttribute("inert", "");
+    }
+    if (more && toggleMore) {
+      more.addEventListener("input", function () { moreDirty = true; });
+      more.addEventListener("change", function () { moreDirty = true; });
+      setMoreOpen(sessionStorage.getItem(moreKey) === "open");
+      toggleMore.addEventListener("click", function () {
+        const show = more.classList.contains("is-closed");
+        setMoreOpen(show);
+        sessionStorage.setItem(moreKey, show ? "open" : "closed");
+      });
+    }
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        const pending = deleteBackdrop && deleteBackdrop.querySelector(".delete-row.is-confirm");
+        if (pending && deleteBackdrop.classList.contains("open")) {
+          pending.classList.remove("is-confirm");
+          return;
+        }
+        if (backdrop && backdrop.classList.contains("open")) closeScan();
+        closeDeleteModal();
+        return;
+      }
+      // j / k: next / previous job in the list (not while typing or with a dialog open).
+      if (event.key !== "j" && event.key !== "k") return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const tag = (event.target.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select" || event.target.isContentEditable) return;
+      if (document.querySelector(".modal-backdrop.open")) return;
+      const rows = Array.from(document.querySelectorAll(".jobs-list .job-row"));
+      if (!rows.length) return;
+      const at = rows.findIndex(function (el) { return el.classList.contains("on"); });
+      const next = event.key === "j" ? Math.min(at + 1, rows.length - 1) : Math.max(at - 1, 0);
+      if (next === at || next < 0) return;
+      event.preventDefault();
+      rows[next].click();
+      rows[next].scrollIntoView({ block: "nearest" });
+    });
+  })();
+  {% if state.running %}
+  async function poll() {
+    try {
+      const res = await fetch("{{ url_for('scrape_status') }}");
+      if (!res.ok) {
+        if (res.status === 401) { location.reload(); return; }
+        throw new Error("HTTP " + res.status);
+      }
+      const data = await res.json();
+      const log = document.getElementById("log");
+      if (log) log.textContent = (data.log || []).join("\n");
+      if (data.running) setTimeout(poll, 2000);
+      else location.reload();
+    } catch (err) {
+      setTimeout(poll, 3000);
+    }
+  }
+  setTimeout(poll, 2000);
+  {% endif %}
+</script>
+{% endblock %}

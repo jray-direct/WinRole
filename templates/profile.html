@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Profile · JobScraper{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <p class="kicker">You</p>
+    <h1>Profile</h1>
+    <p class="muted">One saved set that Jobs, Insights and the scan form all read. Nothing leaves this machine.</p>
+  </div>
+</header>
+
+<form class="tracker-card profile-form" method="post" action="{{ url_for('profile_page') }}">
+  <label>Years of experience
+    <input type="number" name="years" min="0" max="60" step="0.5" value="{{ '%g' % form.years if form.years is not none else '' }}" placeholder="3" class="form-control">
+    <span class="hint">Hides jobs that require more. Jobs that state no number, or only prefer one, stay.</span>
+  </label>
+  <label>Minimum annual pay
+    <input type="number" name="min_pay" min="0" step="1000" value="{{ '%.0f' % form.min_pay if form.min_pay else '' }}" placeholder="90000" class="form-control">
+    <span class="hint">Hides jobs that pay less. Jobs that list no pay stay.</span>
+  </label>
+  <label>Clearance you hold
+    <select name="clearance" class="form-select">
+      {% for key, label in clearances %}
+      <option value="{{ key }}" {% if form.clearance == key %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <span class="hint">Jobs that need a higher level score lower.</span>
+  </label>
+  <label>Remote preference
+    <select name="remote_pref" class="form-select">
+      {% for key, label in remote_prefs %}
+      <option value="{{ key }}" {% if form.remote_pref == key %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <span class="hint">"Remote" also turns the Remote-only filter on by default in Jobs.</span>
+  </label>
+  <fieldset class="span-2">
+    <legend>Certs you hold</legend>
+    <div class="cert-grid">
+      {% for cert in cert_labels %}
+      <label class="check">
+        <input type="checkbox" name="certs" value="{{ cert }}" {% if cert in form.certs %}checked{% endif %} class="form-check-input"> {{ cert }}
+      </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+  <div class="inline span-2">
+    <button type="submit" class="btn btn-primary">Save profile</button>
+    {% if profile %}
+    <button type="submit" class="btn btn-outline-danger" name="action" value="clear" formnovalidate>Clear profile</button>
+    {% endif %}
+    <a role="button" class="btn btn-outline-secondary" href="{{ url_for('jobs') }}">Back to Jobs</a>
+  </div>
+</form>
+
+<section class="panel">
+  <h2>Where it is used</h2>
+  <ul class="plain">
+    <li><strong>Jobs:</strong> years, minimum pay and remote fill the filter bar until you change it. Score gains or loses points for years, clearance and certs; hover the score for the breakdown.</li>
+    <li><strong>Insights:</strong> how many jobs in view fit your years, pay and clearance, and which certs you already hold.</li>
+    <li><strong>New scan:</strong> years, minimum pay and remote are pre-filled.</li>
+  </ul>
+</section>
+{% endblock %}

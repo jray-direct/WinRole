@@ -1,0 +1,32 @@
+{% for job in jobs %}
+{% set row_qs = list_qs.copy() %}
+{% set _ = row_qs.update({"job": job.id}) %}
+<a class="job-row{% if job.id == selected_id %} on{% endif %}"
+   href="{{ url_for('jobs', **row_qs) }}"
+   data-pane="{{ url_for('job_pane', job_id=job.id, keyword=filters.keyword) }}"
+   data-job-id="{{ job.id }}">
+  <div class="job-row-top">
+    <strong>{{ job.title or "(no title)" }}</strong>
+    <span class="pill">{{ job.status | status_label }}</span>
+  </div>
+  <div class="muted">{{ job.company or "—" }}{% if job.location %} · {{ job.location }}{% endif %}</div>
+  <div class="job-row-meta">
+    <span{% if job.pay_hint %} title="{{ job.pay_hint }}"{% endif %}>{{ job.pay_label if job.pay_label != "—" else "Pay n/a" }}{% if job.pay_estimated %} <em class="est">est.</em>{% endif %}</span>
+    <span>{{ job.date_posted or "—" }}</span>
+    {% if job.company_rating %}<span title="Company rating{% if job.company_reviews_count %}, {{ job.company_reviews_count }} reviews{% endif %}">★ {{ '%.1f' % job.company_rating }}</span>{% endif %}
+    <span class="n score" title="{{ job.score_tip }}">{{ job.score | round(0) | int }}</span>
+  </div>
+  <div class="chips">
+    {% for chip in job.years_chips %}
+    <span class="badge years-{{ chip.kind }}" title="{{ chip.title }}">{{ chip.text }}</span>
+    {% endfor %}
+    {% if job.is_remote %}<span class="badge remote">Remote</span>{% endif %}
+    {% if job.clearance and job.clearance != 'unspecified' %}
+    <span class="badge clr-{{ job.clearance }}">{{ job.clearance_label }}</span>
+    {% endif %}
+    {% for cert in job.certs[:3] %}
+    <span class="badge cert">{{ cert }}</span>
+    {% endfor %}
+  </div>
+</a>
+{% endfor %}

@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Materials · JobScraper{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div>
+    <p class="kicker">Vault</p>
+    <h1>Resumes &amp; cover letters</h1>
+    <p class="muted">Store versions here, then attach them on a job or in Tracker.</p>
+  </div>
+</div>
+
+<form class="scrape-form" method="post" enctype="multipart/form-data">
+  <label>Type
+    <select name="kind" required class="form-select">
+      <option value="resume">Resume</option>
+      <option value="cover">Cover letter</option>
+    </select>
+  </label>
+  <label>Name
+    <input type="text" name="name" required placeholder="Network+ resume, AWS cover" class="form-control">
+  </label>
+  <label>File
+    <input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" class="form-control">
+  </label>
+  <label class="check">
+    <input type="checkbox" name="is_default" value="1" class="form-check-input"> Make default for this type
+  </label>
+  <label class="span-2">Paste text (optional, useful for covers)
+    <textarea name="body" rows="8" placeholder="Paste a cover letter…" class="form-control"></textarea>
+  </label>
+  <button type="submit" class="btn btn-primary">Save to vault</button>
+</form>
+
+<div class="grid two">
+  <section class="panel">
+    <h2>Resumes</h2>
+    {% for m in resumes %}
+    <article class="material">
+      <div>
+        <strong>{{ m.name }}</strong>
+        {% if m.is_default %}<span class="pill">Default</span>{% endif %}
+        <div class="muted">
+          {{ m.filename or "text only" }} · {{ m.created_at }}
+        </div>
+      </div>
+      <div class="inline">
+        {% if m.path %}
+        <a role="button" class="btn btn-outline-secondary" href="{{ url_for('materials_file', material_id=m.id) }}">Download</a>
+        {% endif %}
+        {% if not m.is_default %}
+        <form method="post" action="{{ url_for('materials_default', material_id=m.id) }}">
+          <button type="submit" class="btn btn-outline-secondary">Set default</button>
+        </form>
+        {% endif %}
+        <form method="post" action="{{ url_for('materials_delete', material_id=m.id) }}" onsubmit="return confirm('Delete this resume from the vault?');">
+          <button type="submit" class="danger btn btn-outline-danger">Delete</button>
+        </form>
+      </div>
+      {% if m.body %}
+      <pre class="body-preview">{{ m.body }}</pre>
+      {% endif %}
+    </article>
+    {% else %}
+    <p class="muted">No resumes yet.</p>
+    {% endfor %}
+  </section>
+  <section class="panel">
+    <h2>Cover letters</h2>
+    {% for m in covers %}
+    <article class="material">
+      <div>
+        <strong>{{ m.name }}</strong>
+        {% if m.is_default %}<span class="pill">Default</span>{% endif %}
+        <div class="muted">
+          {{ m.filename or "text only" }} · {{ m.created_at }}
+        </div>
+      </div>
+      <div class="inline">
+        {% if m.path %}
+        <a role="button" class="btn btn-outline-secondary" href="{{ url_for('materials_file', material_id=m.id) }}">Download</a>
+        {% endif %}
+        {% if not m.is_default %}
+        <form method="post" action="{{ url_for('materials_default', material_id=m.id) }}">
+          <button type="submit" class="btn btn-outline-secondary">Set default</button>
+        </form>
+        {% endif %}
+        <form method="post" action="{{ url_for('materials_delete', material_id=m.id) }}" onsubmit="return confirm('Delete this cover letter from the vault?');">
+          <button type="submit" class="danger btn btn-outline-danger">Delete</button>
+        </form>
+      </div>
+      {% if m.body %}
+      <pre class="body-preview">{{ m.body }}</pre>
+      {% endif %}
+    </article>
+    {% else %}
+    <p class="muted">No cover letters yet.</p>
+    {% endfor %}
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Cities · JobScraper{% endblock %}
+{% block body %}
+<h1>Cities</h1>
+<p class="muted">Enabled cities are searched on every scrape. Disable extras to speed up a run.</p>
+
+<form class="inline" method="post" action="{{ url_for('bulk_cities') }}">
+  <button name="action" value="enable_all" class="btn btn-primary">Enable all</button>
+  <button class="btn btn-outline-secondary" name="action" value="disable_all">Disable all</button>
+  <button class="btn btn-outline-secondary" name="action" value="core_only">US + Remote only</button>
+</form>
+
+<form class="inline" method="post" action="{{ url_for('add_city') }}">
+  <input type="text" name="name" placeholder="Tulsa, OK" required class="form-control">
+  <button type="submit" class="btn btn-primary">Add city</button>
+</form>
+
+<table class="cities">
+  <thead><tr><th>Enabled</th><th>City</th></tr></thead>
+  <tbody>
+    {% for loc in locations %}
+    <tr>
+      <td>
+        <form method="post" action="{{ url_for('toggle_city', loc_id=loc.id) }}">
+          <input type="hidden" name="enabled" value="{{ 0 if loc.enabled else 1 }}">
+          <button type="submit" class="toggle {% if loc.enabled %}on{% endif %} btn btn-outline-secondary">
+            {{ "On" if loc.enabled else "Off" }}
+          </button>
+        </form>
+      </td>
+      <td>{{ loc.name }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

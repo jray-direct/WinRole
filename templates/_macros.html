@@ -1,0 +1,44 @@
+{% macro templated_field(kind, name, value, templates, label, placeholder, mode="form", save=True, compact=False) %}
+<label class="templated{% if compact %} compact{% endif %}">
+  {% if not compact %}
+  <span class="templated-head">
+    <span>{{ label }}</span>
+    <select class="template-pick form-select" data-target="{{ name }}" data-mode="{{ mode }}" aria-label="{{ label }} templates">
+      <option value="">Templates</option>
+      {% for t in templates %}
+      <option value="{{ t.value }}" {% if t.value == value %}selected{% endif %}>{{ t.name }}</option>
+      {% endfor %}
+    </select>
+    <button type="button"
+            class="clear-x{% if not value %} hide{% endif %} btn btn-outline-secondary"
+            data-clear="{{ name }}"
+            data-mode="{{ mode }}"
+            title="Clear {{ label | lower }}"
+            aria-label="Clear {{ label | lower }}">×</button>
+  </span>
+  {% endif %}
+  {% if compact %}
+  <select class="template-pick form-select" data-target="{{ name }}" data-mode="{{ mode }}" aria-label="{{ label }} templates">
+    <option value="">{{ label }}</option>
+    {% for t in templates %}
+    <option value="{{ t.value }}" {% if t.value == value %}selected{% endif %}>{{ t.name }}</option>
+    {% endfor %}
+  </select>
+  {% endif %}
+  <input type="text" name="{{ name }}" value="{{ value }}" placeholder="{{ placeholder }}" class="form-control">
+  {% if compact %}
+  <button type="button"
+          class="clear-x{% if not value %} hide{% endif %} btn btn-outline-secondary"
+          data-clear="{{ name }}"
+          data-mode="{{ mode }}"
+          title="Clear {{ label | lower }}"
+          aria-label="Clear {{ label | lower }}">×</button>
+  {% endif %}
+  {% if save and not compact %}
+  <span class="save-tpl">
+    <input type="text" class="tpl-name form-control" placeholder="Save as…" aria-label="Template name for {{ label }}">
+    <button type="button" class="tpl-save btn btn-outline-secondary" data-kind="{{ kind }}" data-target="{{ name }}">Save</button>
+  </span>
+  {% endif %}
+</label>
+{% endmacro %}
