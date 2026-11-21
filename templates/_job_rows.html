@@ -24,6 +24,9 @@
     {% if job.clearance and job.clearance != 'unspecified' %}
     <span class="badge clr-{{ job.clearance }}">{{ job.clearance_label }}</span>
     {% endif %}
+    {% if job.kw_stance_label %}
+    <span class="badge stance" title="How this scan keyword appears in the posting">{{ job.kw_stance_label }}</span>
+    {% endif %}
     {% for cert in job.certs[:3] %}
     <span class="badge cert">{{ cert }}</span>
     {% endfor %}

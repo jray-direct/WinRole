@@ -1,24 +1,24 @@
-<div class="cities-panel">
+<div class="cities-panel" id="scan-cities">
   <div class="page-head">
     <p class="muted">{{ enabled_count }} cities on. Only enabled cities are searched.</p>
     <form class="inline" method="post" action="{{ url_for('bulk_cities') }}">
-      <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}">
+      <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}#scan-cities">
       <button name="action" value="enable_all" class="btn btn-primary">All</button>
       <button class="btn btn-outline-secondary" name="action" value="disable_all">None</button>
       <button class="btn btn-outline-secondary" name="action" value="core_only">US + Remote</button>
     </form>
   </div>
   <form class="inline" method="post" action="{{ url_for('add_city') }}">
-    <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}">
+    <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}#scan-cities">
     <input type="text" name="name" placeholder="Tulsa, OK" required class="form-control">
     <button type="submit" class="btn btn-primary">Add city</button>
   </form>
   <div class="city-grid">
     {% for loc in locations %}
     <form method="post" action="{{ url_for('toggle_city', loc_id=loc.id) }}">
-      <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}">
+      <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}#scan-cities">
       <input type="hidden" name="enabled" value="{{ 0 if loc.enabled else 1 }}">
-      <button type="submit" class="toggle {% if loc.enabled %}on{% endif %} btn btn-outline-secondary">{{ loc.name }}</button>
+      <button type="submit" class="toggle {% if loc.enabled %}on{% endif %} btn btn-outline-secondary" data-city-id="{{ loc.id }}">{{ loc.name }}</button>
     </form>
     {% endfor %}
   </div>

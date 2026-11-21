@@ -1468,9 +1468,16 @@ def _job_filters_sql(user_id: int, filters: dict[str, Any]) -> tuple[str, list[A
 
     keyword = (filters.get("keyword") or "").strip()
     if keyword:
+        stance = (filters.get("stance") or "").strip().lower()
+        extra = ""
+        if stance == "required":
+            extra = " AND IFNULL(jk.stance, 'mentioned') = 'required'"
+        elif stance == "preferred":
+            extra = " AND IFNULL(jk.stance, 'mentioned') IN ('required', 'preferred')"
         clauses.append(
             "j.id IN (SELECT jk.job_id FROM job_keywords jk "
-            "WHERE jk.user_id = ? AND jk.keyword = ? COLLATE NOCASE)"
+            "WHERE jk.user_id = ? AND jk.keyword = ? COLLATE NOCASE"
+            f"{extra})"
         )
         args.extend([user_id, keyword])
 
@@ -1675,6 +1682,13 @@ def query_jobs(
         row["pay_hint"] = pay_hint(row)
         row["years_chips"] = years_chips(row.get("years_min"), row.get("years_max"), row.get("years_pref"))
         row["certs"] = list(_json_dict(row.get("cert_stances")))
+        stance = row.get("kw_stance") or ""
+        row["kw_stance_label"] = {
+            "required": "Required",
+            "preferred": "Preferred",
+            "equivalent": "Equivalent",
+            "mentioned": "Mentioned",
+        }.get(stance, "")
         row["clearance"] = row.get("clearance") or "unspecified"
         row["clearance_label"] = CLEARANCE_LABELS.get(row["clearance"], row["clearance"])
         row["status_label"] = STATUS_LABELS.get(row.get("status") or "", row.get("status") or "")

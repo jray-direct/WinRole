@@ -31,7 +31,15 @@ from db import (
     start_run,
     upsert_jobs,
 )
-from textutil import clean_description, has_any_phrase, keyword_pattern, parse_phrases, should_exclude
+from textutil import (
+    STANCE_RANK,
+    clean_description,
+    has_any_phrase,
+    keyword_pattern,
+    mention_stance,
+    parse_phrases,
+    should_exclude,
+)
 from years import parse_years
 
 
@@ -98,6 +106,10 @@ class SearchFilters:
     # "I have N years": drop jobs whose required minimum is above N. Jobs with no
     # stated number, or only a preferred one, are kept.
     my_years: float | None = None
+    # any = mention in title or description; title = title only;
+    # preferred / required = posting treats the keyword as at least that strong.
+    kw_match: str = "any"
+    fetch_description: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -276,6 +288,16 @@ def passes_post_filters(rec: dict[str, Any], filters: SearchFilters) -> bool:
         return False
     if filters.title_exclude and has_any_phrase(title, filters.title_exclude):
         return False
+
+    match_how = (filters.kw_match or "any").strip().lower()
+    if match_how == "title":
+        if not text_matches(title, keyword_pattern(filters.keyword)):
+            return False
+    elif match_how in {"preferred", "required"}:
+        stance = mention_stance(haystack(rec), filters.keyword)
+        need = 4 if match_how == "required" else 3
+        if STANCE_RANK.get(stance, 0) < need:
+            return False
     return True
 
 
@@ -355,11 +377,15 @@ def scrape_all_for_keyword(
         or filters.title_include
         or filters.title_exclude
         or filters.my_years is not None
+        or filters.kw_match not in ("", "any")
+        or filters.fetch_description
     ):
         log(
             "Keeping only jobs that pass filters "
             f"(remote={filters.remote_only}, type={filters.job_type or 'any'}, "
             f"my_years={filters.my_years if filters.my_years is not None else 'any'}, "
+            f"kw_match={filters.kw_match}, "
+            f"full_text={filters.fetch_description}, "
             f"exclude={filters.exclude_keywords or []}, "
             f"title_include={filters.title_include or []}, "
             f"title_exclude={filters.title_exclude or []})"
@@ -386,7 +412,7 @@ def scrape_all_for_keyword(
                     offset=0,
                     country_indeed="USA",
                     description_format="markdown",
-                    fetch_description=False,
+                    fetch_description=bool(filters.fetch_description),
                     distance=radius,
                     verbose=0,
                     **extra,

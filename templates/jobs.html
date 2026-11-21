@@ -33,6 +33,19 @@
     <form method="post" action="{{ url_for('scrape_page') }}" class="scrape-form compact-filters">
       <label>Keyword
         <input type="text" id="scan-keyword" name="keyword" required placeholder="Network+" class="form-control">
+        <span class="hint">Saves jobs that mention this in the title or description — not only jobs whose title is that role.</span>
+      </label>
+      <label>Keep jobs where the keyword is
+        <select name="kw_match" class="form-select">
+          <option value="any">Mentioned anywhere</option>
+          <option value="title">In the job title</option>
+          <option value="preferred">Required or preferred</option>
+          <option value="required">Required only</option>
+        </select>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="full_text" value="1" class="form-check-input"> Fetch full job text
+        <span class="hint">Indeed cards are short. Full text is slower, but years, certs, and required vs mentioned are accurate.</span>
       </label>
       <div class="title-filters">
         {{ templated_field("title_include", "title_include", "", templates.title_include, "Title includes", "analyst, engineer", "form") }}
@@ -111,6 +124,7 @@
   {% if filters.job_type %}<input type="hidden" data-filter-mirror name="job_type" value="{{ filters.job_type }}">{% endif %}
   {% if filters.status %}<input type="hidden" data-filter-mirror name="status" value="{{ filters.status }}">{% endif %}
   {% if filters.clearance %}<input type="hidden" data-filter-mirror name="clearance" value="{{ filters.clearance }}">{% endif %}
+  {% if filters.stance %}<input type="hidden" data-filter-mirror name="stance" value="{{ filters.stance }}">{% endif %}
   {% if filters.posted_within_days %}<input type="hidden" data-filter-mirror name="days" value="{{ filters.posted_within_days }}">{% endif %}
   {% if filters.hide_nopay %}<input type="hidden" data-filter-mirror name="hide_nopay" value="1">{% endif %}
   {% if filters.show_closed %}<input type="hidden" data-filter-mirror name="closed" value="1">{% endif %}
@@ -166,6 +180,14 @@
           {% for key in clearance_options %}
           <option value="{{ key }}" {% if filters.clearance == key %}selected{% endif %}>{{ key | clearance_label }}</option>
           {% endfor %}
+        </select>
+      </label>
+      <label class="filter-inline" title="How this scan keyword appears in the posting. Only applies when a scan is selected.">
+        Keyword in posting
+        <select name="stance" class="form-select" aria-label="Keyword in posting" {% if not filters.keyword %}disabled{% endif %}>
+          <option value="">Any mention</option>
+          <option value="preferred" {% if filters.stance == 'preferred' %}selected{% endif %}>Required or preferred</option>
+          <option value="required" {% if filters.stance == 'required' %}selected{% endif %}>Required only</option>
         </select>
       </label>
       <label class="filter-inline" title="Drops jobs below this. Jobs with no pay listed stay.">
@@ -441,6 +463,8 @@
         if (event.submitter && event.submitter.name) {
           body.append(event.submitter.name, event.submitter.value);
         }
+        const y = backdrop.scrollTop;
+        const cityId = event.submitter && event.submitter.getAttribute("data-city-id");
         panel.querySelectorAll("button").forEach(function (btn) { btn.disabled = true; });
         try {
           const res = await fetch(form.action, {
@@ -455,13 +479,27 @@
             return;
           }
           panel.outerHTML = html;
+          backdrop.scrollTop = y;
+          requestAnimationFrame(function () {
+            backdrop.scrollTop = y;
+            if (cityId) {
+              const btn = backdrop.querySelector('[data-city-id="' + cityId + '"]');
+              if (btn && btn.focus) btn.focus({ preventScroll: true });
+            }
+          });
         } catch (err) {
           alert("Could not update cities.");
           panel.querySelectorAll("button").forEach(function (btn) { btn.disabled = false; });
         }
       }, true);
     }
-    if (backdrop && backdrop.classList.contains("open")) restoreScanDraft();
+    if (backdrop && backdrop.classList.contains("open")) {
+      restoreScanDraft();
+      if (location.hash === "#scan-cities") {
+        const cities = document.getElementById("scan-cities");
+        if (cities) cities.scrollIntoView({ block: "nearest" });
+      }
+    }
     const openBtn = document.getElementById("open-scan");
     const closeBtn = document.getElementById("close-scan");
     function showModal(el, focus) {

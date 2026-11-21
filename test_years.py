@@ -127,11 +127,28 @@ class KeywordAndClearance(unittest.TestCase):
         self.assertTrue(keyword_pattern("Security+").search("CompTIA Security plus"))
         self.assertFalse(keyword_pattern("Security+").search("Cybersecurity+ tools"))
         self.assertTrue(keyword_pattern("Network+").search("Net+ or N+"))
+        self.assertTrue(keyword_pattern("Network+").search("A+, Network+, Security+"))
+        self.assertFalse(keyword_pattern("Network+").search("Network Administrator"))
+        self.assertFalse(keyword_pattern("Network+").search("computer networking experience"))
         self.assertTrue(keyword_pattern("CCNA").search("Cisco Certified Network Associate"))
         self.assertFalse(keyword_pattern("CCNA").search("CCNA Security"))
         self.assertTrue(keyword_pattern("AI-Assisted").search("AI assisted workflows"))
         self.assertTrue(keyword_pattern("senior", whole_word=True).search("Sr. Engineer"))
         self.assertFalse(keyword_pattern("senior", whole_word=True).search("seniority track"))
+
+    def test_network_plus_stance(self):
+        from textutil import mention_stance
+
+        laundry = "Certifications: A+, Network+, Security+ a plus"
+        self.assertEqual(mention_stance(laundry, "Network+"), "preferred")
+        self.assertEqual(
+            mention_stance("Must hold CompTIA Network+ or equivalent", "Network+"),
+            "required",
+        )
+        self.assertEqual(
+            mention_stance("Experience with computer networks and TCP/IP", "Network+"),
+            "absent",
+        )
 
     def test_indeed_plus_queries(self):
         from scrape import indeed_search_terms

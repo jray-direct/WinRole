@@ -522,6 +522,7 @@ def jobs():
         "job_type": last_arg("job_type") or "",
         "status": status_arg,
         "clearance": last_arg("clearance") or "",
+        "stance": (last_arg("stance") or "").lower(),
         "company": request.args.get("company") or "",
         "loc": request.args.get("loc") or "",
         "cert": request.args.get("cert") or "",
@@ -587,6 +588,7 @@ def jobs():
                 filters["job_type"],
                 filters["status"],
                 filters["clearance"],
+                filters["stance"],
                 filters["posted_within_days"],
                 filters["hide_nopay"],
                 filters["show_closed"],
@@ -604,6 +606,7 @@ def jobs():
                 filters["job_type"],
                 filters["status"],
                 filters["clearance"],
+                filters["stance"],
                 filters["posted_within_days"],
                 filters["hide_nopay"],
                 filters["show_closed"],
@@ -848,6 +851,9 @@ def scrape_page():
             flash("Years, salary and days must be numbers.")
             return redirect(url_for("jobs", scan=1))
 
+        kw_match = (request.form.get("kw_match") or "any").strip().lower()
+        if kw_match not in ("any", "title", "preferred", "required"):
+            kw_match = "any"
         filters = SearchFilters(
             keyword=keyword,
             remote_only=request.form.get("remote") == "1",
@@ -858,6 +864,8 @@ def scrape_page():
             title_include=[p.strip() for p in title_include_raw.split(",") if p.strip()],
             title_exclude=[p.strip() for p in title_exclude_raw.split(",") if p.strip()],
             job_type=job_type if job_type in JOB_TYPES else None,
+            kw_match=kw_match,
+            fetch_description=request.form.get("full_text") == "1",
         )
         locations = get_enabled_locations(_uid())
         if not locations:
