@@ -467,7 +467,7 @@
         const cityId = event.submitter && event.submitter.getAttribute("data-city-id");
         panel.querySelectorAll("button").forEach(function (btn) { btn.disabled = true; });
         try {
-          const res = await fetch(form.action, {
+          const res = await fetch(form.getAttribute("action") || form.action, {
             method: "POST",
             body: body,
             headers: { "X-Requested-With": "fetch" },

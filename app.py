@@ -802,7 +802,8 @@ def add_city():
 
 @app.post("/cities/bulk")
 def bulk_cities():
-    action = request.form.get("action")
+    # Field must not be named "action" — that shadows HTMLFormElement.action in JS.
+    action = request.form.get("bulk") or request.form.get("action")
     if action == "enable_all":
         set_all_locations_enabled(_uid(), True)
         message = "All cities enabled."

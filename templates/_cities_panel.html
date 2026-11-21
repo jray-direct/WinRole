@@ -3,9 +3,9 @@
     <p class="muted">{{ enabled_count }} cities on. Only enabled cities are searched.</p>
     <form class="inline" method="post" action="{{ url_for('bulk_cities') }}">
       <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}#scan-cities">
-      <button name="action" value="enable_all" class="btn btn-primary">All</button>
-      <button class="btn btn-outline-secondary" name="action" value="disable_all">None</button>
-      <button class="btn btn-outline-secondary" name="action" value="core_only">US + Remote</button>
+      <button name="bulk" value="enable_all" class="btn btn-primary">All</button>
+      <button class="btn btn-outline-secondary" name="bulk" value="disable_all">None</button>
+      <button class="btn btn-outline-secondary" name="bulk" value="core_only">US + Remote</button>
     </form>
   </div>
   <form class="inline" method="post" action="{{ url_for('add_city') }}">

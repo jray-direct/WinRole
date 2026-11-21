@@ -5,9 +5,9 @@
 <p class="muted">Enabled cities are searched on every scrape. Disable extras to speed up a run.</p>
 
 <form class="inline" method="post" action="{{ url_for('bulk_cities') }}">
-  <button name="action" value="enable_all" class="btn btn-primary">Enable all</button>
-  <button class="btn btn-outline-secondary" name="action" value="disable_all">Disable all</button>
-  <button class="btn btn-outline-secondary" name="action" value="core_only">US + Remote only</button>
+  <button name="bulk" value="enable_all" class="btn btn-primary">Enable all</button>
+  <button class="btn btn-outline-secondary" name="bulk" value="disable_all">Disable all</button>
+  <button class="btn btn-outline-secondary" name="bulk" value="core_only">US + Remote only</button>
 </form>
 
 <form class="inline" method="post" action="{{ url_for('add_city') }}">
