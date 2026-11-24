@@ -1,0 +1,49 @@
+<section class="fit-note" aria-label="Fit">
+  <h3>Fit{% if fit.score is not none %} <span class="n score heat-{{ fit.tier or 'cool' }}">{{ fit.score | round(0) | int }}</span>{% endif %}</h3>
+  {% if not fit.has_resume %}
+  <p class="fit-note-text">{{ fit.note }}</p>
+  {% else %}
+  {% if fit.sentence %}<p class="fit-note-text">{{ fit.sentence }}</p>{% endif %}
+  <p><strong>Matched.</strong> {{ fit.matched | join(", ") if fit.matched else "None" }}</p>
+  <p><strong>Missing required.</strong> {{ fit.missing_required | join(", ") if fit.missing_required else "None" }}</p>
+  <p><strong>Degree.</strong> {{ fit.degree or "Not mentioned" }}</p>
+  <p><strong>Years.</strong> {{ fit.years or "Not compared" }}</p>
+  {% if fit.similar %}
+  <p><strong>Similar.</strong>
+    {% for item in fit.similar %}{{ item.job }} ~ {{ item.resume }}{% if not loop.last %}, {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+  {% endif %}
+  <div class="ai-box" data-ai-root
+       data-ai-ready="{{ '1' if ai_ready else '0' }}"
+       data-explain-url="{{ url_for('job_explain', job_id=job.id) }}"
+       data-cover-url="{{ url_for('job_cover_draft', job_id=job.id) }}"
+       data-bullets-url="{{ url_for('job_bullets', job_id=job.id) }}"
+       data-interview-url="{{ url_for('job_interview', job_id=job.id) }}"
+       data-save-url="{{ url_for('job_cover_save', job_id=job.id) }}"
+       data-bullets-save-url="{{ url_for('job_bullets_save', job_id=job.id) }}">
+    <div class="inline">
+      <button type="button" class="btn btn-outline-secondary" data-ai="explain">Explain this job</button>
+      <button type="button" class="btn btn-outline-secondary" data-ai="cover">Draft cover letter</button>
+      <button type="button" class="btn btn-outline-secondary" data-ai="bullets">Tailor bullets</button>
+      <button type="button" class="btn btn-outline-secondary" data-ai="interview">Interview questions</button>
+    </div>
+    <p class="hint" data-ai-status></p>
+    <p class="ai-explain" data-ai-explain hidden></p>
+    <div data-ai-draft hidden>
+      <label class="span-2">Cover letter
+        <textarea rows="10" class="form-control" data-ai-draft-text></textarea>
+      </label>
+      <button type="button" class="btn btn-primary" data-cover-save>Save to vault</button>
+    </div>
+    <div data-ai-bullets hidden>
+      <label class="span-2">Experience bullets
+        <textarea rows="8" class="form-control" data-ai-bullets-text></textarea>
+      </label>
+      <button type="button" class="btn btn-primary" data-bullets-save>Save bullets</button>
+    </div>
+    <div data-ai-interview hidden>
+      <ol data-ai-interview-list></ol>
+    </div>
+  </div>
+</section>

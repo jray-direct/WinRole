@@ -4,31 +4,41 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>{% block title %}JobScraper{% endblock %}</title>
+  <title>{% block title %}Win Role{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='bootstrap.min.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=32">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=38">
+  <script>
+    (function () {
+      try {
+        var raw = sessionStorage.getItem("js-nav");
+        if (!raw) return;
+        var data = JSON.parse(raw);
+        if (!data || Date.now() - data.t > 2000 || !data.dir) return;
+        document.documentElement.setAttribute("data-nav-enter", data.dir > 0 ? "down" : "up");
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body class="{% block body_class %}{% endblock %}">
-  <header class="app-bar">
-    <nav>
-      <ul>
-        <li><a class="brand" href="{{ url_for('insights') }}"><strong>JobScraper</strong></a></li>
-      </ul>
-      <ul>
-        <li><a href="{{ url_for('insights') }}" {% if endpoint == 'insights' %}aria-current="page"{% endif %}>Insights</a></li>
-        <li><a href="{{ url_for('jobs') }}" {% if endpoint == 'jobs' %}aria-current="page"{% endif %}>Jobs</a></li>
-        <li><a href="{{ url_for('tracker') }}" {% if endpoint in ('tracker', 'materials') %}aria-current="page"{% endif %}>Tracker</a></li>
-        <li><a href="{{ url_for('profile_page') }}" {% if endpoint == 'profile_page' %}aria-current="page"{% endif %}>Profile</a></li>
-        {% if user_email %}
-        <li><span class="nav-user">{{ user_email }}</span></li>
-        <li><a href="{{ url_for('logout') }}">Sign out</a></li>
-        {% endif %}
-      </ul>
+  <aside class="side-nav">
+    <a class="brand" href="{{ url_for('insights') }}">Win Role</a>
+    <nav aria-label="Primary">
+      <span class="nav-indicator" aria-hidden="true"></span>
+      <a href="{{ url_for('jobs') }}" {% if endpoint == 'jobs' %}aria-current="page"{% endif %}>Jobs</a>
+      <a href="{{ url_for('tracker') }}" {% if endpoint in ('tracker', 'materials', 'resume_readout') %}aria-current="page"{% endif %}>Tracker</a>
+      <a href="{{ url_for('insights') }}" {% if endpoint == 'insights' %}aria-current="page"{% endif %}>Insights</a>
+      <a href="{{ url_for('profile_page') }}" {% if endpoint == 'profile_page' %}aria-current="page"{% endif %}>Profile</a>
     </nav>
-  </header>
+    {% if user_email %}
+    <div class="side-foot">
+      <span class="nav-user" title="{{ user_email }}">{{ user_email }}</span>
+      <a href="{{ url_for('logout') }}">Sign out</a>
+    </div>
+    {% endif %}
+  </aside>
   <main class="{% block main_class %}container{% endblock %}">
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
@@ -42,5 +52,7 @@
     {% block body %}{% endblock %}
   </main>
   <script src="{{ url_for('static', filename='bootstrap.bundle.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='nav.js') }}?v=1"></script>
+  <script src="{{ url_for('static', filename='pane.js') }}?v=2"></script>
 </body>
 </html>

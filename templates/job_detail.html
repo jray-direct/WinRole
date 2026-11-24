@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ job.title }} · JobScraper{% endblock %}
+{% block title %}{{ job.title }} · Win Role{% endblock %}
 {% block body %}
 <p><a href="{{ url_for('jobs', keyword=back_keyword) }}">← Jobs</a></p>
 <h1>{{ job.title or '(no title)' }}</h1>
@@ -103,6 +103,9 @@
   <div><dt>Last seen</dt><dd>{{ job.last_seen_at }}</dd></div>
   <div><dt>Emails</dt><dd>{{ job.emails or "—" }}</dd></div>
 </dl>
+
+{% set fit = job.fit %}
+{% include "_fit_note.html" %}
 
 <h2>Description</h2>
 <div class="desc">{{ job.highlighted_description }}</div>

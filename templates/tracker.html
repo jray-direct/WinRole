@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Tracker · JobScraper{% endblock %}
+{% block title %}Tracker · Win Role{% endblock %}
 {% block body %}
 <div class="page-head">
   <div>
@@ -136,7 +136,10 @@
             <option value="{{ m.id }}" {% if job.cover_id == m.id %}selected{% endif %}>{{ m.name }}</option>
             {% endfor %}
           </select>
-          <input type="text" name="notes" value="{{ job.notes or '' }}" placeholder="Notes" class="form-control">
+          <div class="tracker-notes">
+            <input type="text" name="notes" value="{{ job.notes or '' }}" placeholder="Notes" class="form-control">
+            <button type="button" class="btn btn-outline-secondary" data-follow-up data-url="{{ url_for('job_follow_up_note', job_id=job.id) }}">Draft note</button>
+          </div>
           <button type="submit" class="btn btn-primary">Save</button>
         </form>
         <form class="inline danger-form" method="post" action="{{ url_for('job_delete', job_id=job.id) }}" onsubmit="return confirm('Delete this job from the database?');">

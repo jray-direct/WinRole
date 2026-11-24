@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -27,43 +29,104 @@ from years import parse_years
 
 def extract_resume_text(path: Path | str) -> str:
     """Extract plain text from a resume file (.pdf, .docx, .txt, .md, .rtf, .doc)."""
+    text, _problem = extract_resume_detail(path)
+    return text
+
+
+def extract_resume_detail(path: Path | str) -> tuple[str, str | None]:
+    """Return (text, problem). problem is a user-facing reason when text is empty."""
     p = Path(path)
     if not p.is_file():
-        return ""
+        return "", "The uploaded file is missing on disk."
     ext = p.suffix.lower()
-    if ext in {".txt", ".md"}:
-        return p.read_text(encoding="utf-8", errors="replace").strip()
-    if ext == ".pdf":
-        return _extract_pdf(p)
-    if ext == ".docx":
-        return _extract_docx(p)
-    if ext == ".rtf":
-        return _extract_rtf(p.read_text(encoding="utf-8", errors="replace"))
-    if ext == ".doc":
-        return _extract_doc_fallback(p)
-    return ""
-
-
-def _extract_pdf(path: Path) -> str:
     try:
-        import fitz  # PyMuPDF
+        if ext in {".txt", ".md"}:
+            text = p.read_text(encoding="utf-8", errors="replace").strip()
+            return text, None if text else "That text file is empty."
+        if ext == ".pdf":
+            return _extract_pdf(p)
+        if ext == ".docx":
+            text = _extract_docx(p)
+            return text, None if text else "Couldn't read text from this Word file."
+        if ext == ".rtf":
+            text = _extract_rtf(p.read_text(encoding="utf-8", errors="replace"))
+            return text, None if text else "Couldn't read text from this RTF file."
+        if ext == ".doc":
+            text = _extract_doc_fallback(p)
+            return text, None if text else "Couldn't read text from this .doc file. Save it as PDF or .docx and upload that."
+    except Exception as exc:
+        return "", f"Couldn't read this file ({exc})."
+    return "", "Use PDF, Word, text, Markdown, or RTF."
 
-        parts: list[str] = []
-        with fitz.open(str(path)) as doc:
-            for page in doc:
-                text = page.get_text("text")
-                if text:
-                    parts.append(text)
-        return "\n".join(parts).strip()
-    except Exception:
-        pass
+
+def _extract_pdf(path: Path) -> tuple[str, str | None]:
+    """Read a text layer with PyMuPDF, then pypdf. Say why when both come up empty."""
+    problems: list[str] = []
+    try:
+        import pymupdf
+    except ImportError:
+        pymupdf = None
+        problems.append("PyMuPDF is not installed")
+    if pymupdf is not None:
+        try:
+            text, image_only, locked = _pymupdf_text(pymupdf, path)
+        except Exception as exc:
+            text, image_only, locked = "", False, False
+            problems.append(f"PyMuPDF could not open it ({exc})")
+        else:
+            if locked:
+                return "", "This PDF is password protected. Remove the password and upload it again."
+            if text:
+                return text, None
+            if image_only:
+                return "", "This PDF has no selectable text (it looks scanned). Upload a text PDF, a Word file, or paste the resume."
     try:
         from pypdf import PdfReader
+    except ImportError:
+        PdfReader = None
+        problems.append("pypdf is not installed")
+    if PdfReader is not None:
+        try:
+            reader = PdfReader(str(path))
+            if getattr(reader, "is_encrypted", False):
+                return "", "This PDF is password protected. Remove the password and upload it again."
+            text = "\n".join((page.extract_text() or "") for page in reader.pages).strip()
+        except Exception as exc:
+            text = ""
+            problems.append(f"pypdf could not open it ({exc})")
+        if text:
+            return text, None
+    if problems:
+        return "", "Couldn't read this PDF (" + "; ".join(problems) + "). Install pymupdf in the app virtualenv and restart."
+    return "", "Couldn't find any text in this PDF."
 
-        reader = PdfReader(str(path))
-        return "\n".join((page.extract_text() or "") for page in reader.pages).strip()
-    except Exception:
-        return ""
+
+def _pymupdf_text(pymupdf: Any, path: Path) -> tuple[str, bool, bool]:
+    """Return (text, image_only, locked). sort=True keeps multi-column resumes in reading order."""
+    parts: list[str] = []
+    image_pages = 0
+    with pymupdf.open(str(path)) as doc:
+        if doc.is_encrypted and not doc.authenticate(""):
+            return "", False, True
+        for page in doc:
+            text = (page.get_text("text", sort=True) or "").strip()
+            if len(text) < 40:
+                blocks = page.get_text("blocks", sort=True) or []
+                block_text = "\n".join(
+                    block[4].strip()
+                    for block in blocks
+                    if len(block) > 4 and isinstance(block[4], str) and block[4].strip()
+                )
+                if len(block_text) > len(text):
+                    text = block_text
+            if text:
+                parts.append(text)
+            elif page.get_images():
+                image_pages += 1
+        page_count = doc.page_count
+    joined = "\n\n".join(parts).strip()
+    image_only = not joined and page_count > 0 and image_pages == page_count
+    return joined, image_only, False
 
 
 def _extract_docx(path: Path) -> str:
@@ -507,6 +570,122 @@ TECHNICAL_SKILLS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 )
 _SKILL_BY_NAME: dict[str, re.Pattern[str]] = dict(TECHNICAL_SKILLS)
 
+# Extra spellings that should fold to a catalog label on both the resume and the job.
+# Catalog regexes already catch many of these; the map is what typed chips and
+# leftover keywords use, and what fills gaps like "psql" or bare "js".
+SKILL_ALIASES: dict[str, tuple[str, ...]] = {
+    "JavaScript": ("js", "ecmascript"),
+    "PowerShell": ("pwsh", "posh"),
+    "Go": ("golang",),
+    "Kubernetes": ("k8s", "kube"),
+    "PostgreSQL": ("postgres", "postgresql", "psql"),
+    "MySQL": ("mariadb",),
+    "MongoDB": ("mongo",),
+    "Node.js": ("nodejs", "node js"),
+    "React": ("reactjs", "react js"),
+    "Vue.js": ("vuejs", "vue js"),
+    "Next.js": ("nextjs",),
+    "AWS": ("amazon web services",),
+    "GCP": ("google cloud platform", "google cloud"),
+    "SQL Server": ("mssql", "ms sql", "sqlserver"),
+    "C#": ("csharp", "c sharp"),
+    "C++": ("cpp", "c plus plus"),
+    ".NET": ("dotnet",),
+    "GitHub Actions": ("gha",),
+    "CI/CD": ("cicd",),
+    "Entra ID / Azure AD": ("azure ad", "entra id"),
+    "REST API": ("restful",),
+    "Power BI": ("powerbi",),
+    "ELK Stack": ("elasticsearch", "elastic stack"),
+    "Microsoft 365": ("m365", "o365", "office 365"),
+    "Apache Spark": ("pyspark",),
+    "Scikit-learn": ("sklearn", "scikit-learn"),
+    "Ruby on Rails": ("rails",),
+    "Spring Boot": ("springboot",),
+    "Hyper-V": ("hyperv",),
+    "TCP/IP": ("tcpip",),
+    "DynamoDB": ("dynamo",),
+}
+
+_LANG_NAMES: frozenset[str] = frozenset(label for label, _ in PROGRAMMING_LANGUAGES)
+_SKILL_NAMES: frozenset[str] = frozenset(label for label, _ in TECHNICAL_SKILLS)
+_FIELD_BY_LOWER: dict[str, str] = {label.casefold(): label for label, _ in DEGREE_FIELDS}
+
+
+def _alias_key(term: str) -> str:
+    return re.sub(r"\s+", " ", (term or "").strip().casefold())
+
+
+def _build_alias_lookup() -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for label in (*_LANG_NAMES, *_SKILL_NAMES):
+        lookup[_alias_key(label)] = label
+    for label, phrases in SKILL_ALIASES.items():
+        if label not in _LANG_NAMES and label not in _SKILL_NAMES:
+            continue
+        lookup[_alias_key(label)] = label
+        for phrase in phrases:
+            key = _alias_key(phrase)
+            if key:
+                lookup[key] = label
+    return lookup
+
+
+_ALIAS_TO_CANON: dict[str, str] = _build_alias_lookup()
+
+
+def _compile_alias_patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    compiled: list[tuple[str, re.Pattern[str]]] = []
+    for label, phrases in SKILL_ALIASES.items():
+        if label not in _LANG_NAMES and label not in _SKILL_NAMES:
+            continue
+        parts = [
+            keyword_pattern(phrase, whole_word=True).pattern
+            for phrase in phrases
+            if _alias_key(phrase) and _alias_key(phrase) != _alias_key(label)
+        ]
+        if not parts:
+            continue
+        compiled.append((label, re.compile("|".join(f"(?:{part})" for part in parts), re.I)))
+    return tuple(compiled)
+
+
+ALIAS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = _compile_alias_patterns()
+
+# Bump when the Heat Score formula changes. Stored beside the resume signature
+# so cached rows from the previous formula are not reused.
+SCORER_VERSION = "6"
+SIMILAR_THRESHOLD = 0.78
+
+
+def canonical_skill(term: str) -> str | None:
+    """Catalog label for a skill or language spelling, or None if we don't know it."""
+    key = _alias_key(term)
+    if not key:
+        return None
+    return _ALIAS_TO_CANON.get(key)
+
+
+def canonical_cert(term: str) -> str | None:
+    key = _alias_key(term)
+    if not key:
+        return None
+    return _CERT_CANON_LOWER.get(key)
+
+
+def canonical_field(term: str) -> str:
+    text = (term or "").strip()
+    if not text:
+        return ""
+    return _FIELD_BY_LOWER.get(text.casefold(), text)
+
+
+def required_skill_penalty(missing: int) -> float:
+    """Points removed after normalization for each absent required skill, capped at 24."""
+    if missing <= 0:
+        return 0.0
+    return float(min(8 * missing, 24))
+
 # Common roles / job functions for experience-title alignment
 _ROLE_ITEMS: tuple[tuple[str, str], ...] = (
     ("Software Engineer", r"\bsoftware\s+(?:engineer|developer)\b"),
@@ -613,10 +792,43 @@ _STOPWORDS = frozenset({
     "without", "work", "worked", "working", "written", "wrote", "www", "year", "years", "you", "your",
 })
 
-_SKILLS_SECTION_HEAD = re.compile(
-    r"^\s*(?:technical\s+)?(?:skills?|technologies|tools|core\s+competencies|"
-    r"proficiencies|qualifications|expertise|certifications?(?:\s*(?:&|and)\s*skills?)?)\s*:?\s*$",
-    re.I,
+# Heading label only, after bullets, numbers, and a trailing rule are stripped.
+# Projects are matched before experience so "Project Experience" is not treated as a job.
+_SECTION_LABELS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("education", re.compile(
+        r"^(?:education|academic(?:\s+background)?|academics)"
+        r"(?:\s*(?:&|and|/)\s*(?:training|certifications?|coursework))?$",
+        re.I,
+    )),
+    ("projects", re.compile(
+        r"^(?:(?:personal|academic|selected|key|relevant|school|technical|capstone|side|course)\s+)?"
+        r"projects?(?:\s+(?:experience|highlights?|portfolio))?"
+        r"(?:\s*(?:&|and|/)\s*contributions)?$",
+        re.I,
+    )),
+    ("experience", re.compile(
+        r"^(?:professional|work)$|"
+        r"^(?:(?:work|professional|relevant|related|selected|additional|industry|career)\s+)?"
+        r"(?:experience|employment(?:\s+history)?|work\s+history|career\s+history|professional\s+background)$",
+        re.I,
+    )),
+    ("skills", re.compile(
+        r"^(?:(?:technical|core|key|professional)\s+)?"
+        r"(?:skills?(?:\s*(?:&|and|/)\s*(?:tools|technologies|abilities|competenc(?:y|ies)|expertise))?|"
+        r"skill\s*set|technologies|tech(?:nical)?\s+stack|tools(?:\s*(?:&|and|/)\s*technologies)?|"
+        r"competenc(?:y|ies)|proficiencies|areas?\s+of\s+expertise|expertise|"
+        r"programming\s+languages?|languages?|certifications?|licenses?(?:\s*(?:&|and)\s*certifications?)?|clearance)$",
+        re.I,
+    )),
+    ("summary", re.compile(
+        r"^(?:summary|professional\s+summary|executive\s+summary|career\s+summary|objective|profile|about(?:\s+me)?)$",
+        re.I,
+    )),
+    ("other", re.compile(
+        r"^(?:awards?(?:\s*(?:&|and)\s*honors?)?|honors?|publications?|volunteer(?:ing)?(?:\s+experience)?|"
+        r"activities|references?|military(?:\s+service)?|interests?|hobbies)$",
+        re.I,
+    )),
 )
 _ANY_SECTION_HEAD = re.compile(
     r"^\s*(?:experience|work\s+experience|professional\s+experience|employment(?:\s+history)?|"
@@ -652,6 +864,21 @@ _EXPLICIT_RESUME_YEARS_RE = re.compile(
     r"(?:of\s+)?(?:[\w-]+\s+){0,3}(?:experience|background|expertise)\b",
     re.I,
 )
+_ACADEMIC_LINE = re.compile(
+    r"\b(?:university|college|bachelor|master|b\.s\.|m\.s\.|ph\.?d|associate'?s?\s+degree|high\s+school)\b",
+    re.I,
+)
+_CREDENTIAL_LEAD = re.compile(
+    r"^(?:ph\.?\s*d|doctor|master|bachelor|associate|m\.?\s*s|b\.?\s*s|m\.?\s*a|b\.?\s*a|mba|a\.?\s*s)\b",
+    re.I,
+)
+_CREDENTIAL_CONTEXT = re.compile(r"\b(?:degree|university|college|major|graduat)\b", re.I)
+_HEADING_MARK = re.compile(r"^(?:[#>*\-]+\s*)+")
+_HEADING_BULLET = re.compile(r"^[•·▪◦●○■▸►‣⁃]+\s*")
+_INVISIBLE = re.compile(r"[\u200b\u200c\u200d\u2060\ufeff\u00ad\u202a-\u202e\u2066-\u2069]")
+_HEADING_INDEX = re.compile(r"^(?:\d{1,2}|[IVX]{1,4})[\).:\-]\s+", re.I)
+_HEADING_RULE = re.compile(r"[\s|–—_=.*·•]{2,}$")
+_SKILL_LIST_SPLIT = re.compile(r"[,|•·▪◦;]+")
 
 
 def _month_index(year: int, month: int) -> int:
@@ -669,43 +896,26 @@ def _parse_month(name: str | None, slash_num: str | None, default: int) -> int:
     return default
 
 
-def estimate_resume_years(text: str) -> float | None:
-    """Estimate total professional years of experience from resume text."""
-    if not text or not text.strip():
-        return None
-    today = date.today()
-    now_idx = _month_index(today.year, today.month)
-
-    explicit_years: list[float] = []
+def _explicit_year_values(text: str) -> list[float]:
+    found: list[float] = []
     for m in _EXPLICIT_RESUME_YEARS_RE.finditer(text):
         try:
             val = float(m.group(1))
         except ValueError:
             continue
         if 0 < val <= 45:
-            explicit_years.append(val)
+            found.append(val)
+    return found
 
-    # Split resume into lines and track sections so Education dates aren't counted as work.
+
+def _date_intervals(text: str, today: date | None = None) -> list[tuple[int, int]]:
+    """Employment date ranges, ignoring degree lines. One pass, no heading logic."""
+    today = today or date.today()
+    now_idx = _month_index(today.year, today.month)
     intervals: list[tuple[int, int]] = []
-    section = "top"
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line:
-            continue
-        if len(line) <= 45:
-            if _EDU_SECTION_HEAD.match(line):
-                section = "education"
-                continue
-            if _EXP_SECTION_HEAD.match(line):
-                section = "experience"
-                continue
-            if _ANY_SECTION_HEAD.match(line):
-                section = "other"
-                continue
-        if section == "education":
-            continue
-        # Skip lines that obviously describe a degree even without an Education heading
-        if re.search(r"\b(?:university|college|bachelor|master|b\.s\.|m\.s\.|ph\.?d|associate'?s?\s+degree|high\s+school)\b", line, re.I):
+        if not line or _ACADEMIC_LINE.search(line):
             continue
         for m in _DATE_RANGE_RE.finditer(line):
             sy = int(m.group("s_y"))
@@ -723,25 +933,54 @@ def estimate_resume_years(text: str) -> float | None:
                 end_i = min(_month_index(ey, em) + 1, now_idx + 1)
             if end_i > start_i and (end_i - start_i) <= 45 * 12:
                 intervals.append((start_i, end_i))
+    return intervals
 
+
+def _combine_years(explicit: list[float], intervals: list[tuple[int, int]]) -> float | None:
     date_years: float | None = None
     if intervals:
         intervals.sort()
         merged: list[tuple[int, int]] = []
-        for s, e in intervals:
-            if merged and s <= merged[-1][1]:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        for start, end in intervals:
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
             else:
-                merged.append((s, e))
-        total_months = sum(e - s for s, e in merged)
-        date_years = round((total_months / 12.0) * 2) / 2.0  # nearest 0.5 yr
+                merged.append((start, end))
+        total_months = sum(end - start for start, end in merged)
+        date_years = round((total_months / 12.0) * 2) / 2.0
         if date_years <= 0:
             date_years = None
-
-    candidates = [v for v in (max(explicit_years) if explicit_years else None, date_years) if v is not None]
+    candidates = [v for v in (max(explicit) if explicit else None, date_years) if v is not None]
     if not candidates:
         return None
     return min(max(candidates), 45.0)
+
+
+def estimate_resume_years(text: str) -> float | None:
+    """Estimate total professional years from text that has not been sectioned."""
+    if not text or not text.strip():
+        return None
+    # Education dates are not jobs. Everything else still counts for an unsectioned resume.
+    kept: list[str] = []
+    section = "top"
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if len(line) <= 45:
+            if _EDU_SECTION_HEAD.match(line):
+                section = "education"
+                continue
+            if _EXP_SECTION_HEAD.match(line):
+                section = "experience"
+                continue
+            if _ANY_SECTION_HEAD.match(line):
+                section = "other"
+                continue
+        if section != "education":
+            kept.append(line)
+    body = "\n".join(kept)
+    return _combine_years(_explicit_year_values(text), _date_intervals(body))
 
 
 def extract_degrees(text: str) -> tuple[int, str, list[str]]:
@@ -846,18 +1085,23 @@ def _extract_custom_keywords(
         line = raw_line.strip()
         if not line:
             continue
-        if len(line) <= 50:
-            if _SKILLS_SECTION_HEAD.match(line):
+        if len(line) <= 180:
+            kind, rest = _classify_heading(line)
+            if kind == "skills":
                 section = "skills"
+                for piece in _SKILL_LIST_SPLIT.split(rest):
+                    chunk = piece.strip()
+                    if chunk and len(chunk.split()) <= 3:
+                        record(chunk, 4)
                 continue
-            if _ANY_SECTION_HEAD.match(line):
+            if kind:
                 section = "other"
                 continue
 
         # In skills lines (or lines like "Skills: X, Y, Z"), split comma/pipe/bullet lists
         if section == "skills" or re.match(r"^(?:skills?|technologies|tools|languages|certifications?|software)\s*:", line, re.I):
             cleaned = re.sub(r"^[A-Za-z &/]{2,28}:\s*", "", line)
-            for piece in re.split(r"[,|•·▪◦;]+", cleaned):
+            for piece in _SKILL_LIST_SPLIT.split(cleaned):
                 chunk = piece.strip()
                 if chunk and len(chunk.split()) <= 3:
                     record(chunk, 4)
@@ -920,18 +1164,398 @@ class ResumeProfile:
         }
 
 
+def empty_overrides() -> dict[str, Any]:
+    return {
+        "add_skills": [],
+        "remove_skills": [],
+        "add_languages": [],
+        "remove_languages": [],
+        "add_certs": [],
+        "remove_certs": [],
+        "degree_level": None,
+        "clear_degree": False,
+        "add_degree_fields": [],
+        "remove_degree_fields": [],
+    }
+
+
+def _norm_terms(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item).strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def normalize_overrides(raw: dict[str, Any] | None) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    degree = raw.get("degree_level")
+    degree_level: int | None
+    if degree is None or degree == "":
+        degree_level = None
+    else:
+        try:
+            degree_level = int(degree)
+        except (TypeError, ValueError):
+            degree_level = None
+        if degree_level not in DEGREE_LABELS:
+            degree_level = None
+    base = empty_overrides()
+    base.update(
+        {
+            "add_skills": _norm_terms(raw.get("add_skills")),
+            "remove_skills": _norm_terms(raw.get("remove_skills")),
+            "add_languages": _norm_terms(raw.get("add_languages")),
+            "remove_languages": _norm_terms(raw.get("remove_languages")),
+            "add_certs": _norm_terms(raw.get("add_certs")),
+            "remove_certs": _norm_terms(raw.get("remove_certs")),
+            "degree_level": degree_level,
+            "clear_degree": bool(raw.get("clear_degree")),
+            "add_degree_fields": _norm_terms(raw.get("add_degree_fields")),
+            "remove_degree_fields": _norm_terms(raw.get("remove_degree_fields")),
+        }
+    )
+    return base
+
+
+def load_overrides(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return empty_overrides()
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return empty_overrides()
+    return normalize_overrides(data if isinstance(data, dict) else None)
+
+
+def _term_keys(term: str) -> set[str]:
+    keys = {term.casefold()}
+    for canon in (canonical_skill(term), canonical_cert(term)):
+        if canon:
+            keys.add(canon.casefold())
+    field = canonical_field(term)
+    if field:
+        keys.add(field.casefold())
+    return keys
+
+
+def _without(items: list[str], removed: list[str]) -> list[str]:
+    banned: set[str] = set()
+    for term in removed:
+        banned |= _term_keys(term)
+    kept: list[str] = []
+    for item in items:
+        if _term_keys(item) & banned:
+            continue
+        kept.append(item)
+    return kept
+
+
+def _include_one(items: list[str], label: str) -> list[str]:
+    label = (label or "").strip()
+    if not label:
+        return items
+    if any(_term_keys(label) & _term_keys(item) for item in items):
+        return items
+    return [*items, label]
+
+
+def _removed(term: str, removed: list[str]) -> bool:
+    keys = _term_keys(term)
+    return any(keys & _term_keys(item) for item in removed)
+
+
+def _place_skill(label: str, languages: list[str], skills: list[str]) -> tuple[list[str], list[str]]:
+    if label in _LANG_NAMES:
+        return _include_one(languages, label), skills
+    if label in _SKILL_NAMES:
+        return languages, _include_one(skills, label)
+    return languages, skills
+
+
+@dataclass
+class ResumeSections:
+    """Heading buckets. `found` is empty when the resume has no recognizable headings."""
+
+    full: str
+    found: frozenset[str]
+    parts: dict[str, str]
+
+    def _join(self, *keys: str) -> str:
+        chunks = [self.parts[key] for key in keys if self.parts.get(key)]
+        return "\n".join(chunks).strip()
+
+    @cached_property
+    def work_text(self) -> str:
+        """Preamble, summary, experience, and skills. Projects and education stay out."""
+        if not self.found:
+            return self.full
+        return self._join("preamble", "summary", "experience", "skills")
+
+    @cached_property
+    def degree_text(self) -> str:
+        """Education, or credential lines elsewhere. Never a project write-up."""
+        if not self.found:
+            return self.full
+        chunks: list[str] = []
+        if "education" in self.found:
+            education = self.parts.get("education", "")
+            if education:
+                chunks.append(education)
+            header_keys = ("preamble", "summary")
+        else:
+            header_keys = ("preamble", "summary", "experience", "skills")
+        for key in header_keys:
+            for line in self.parts.get(key, "").splitlines():
+                if _credential_line(line):
+                    chunks.append(line)
+        return "\n".join(chunks).strip()
+
+    @cached_property
+    def cert_text(self) -> str:
+        """Work text plus education, where licenses often sit beside the degree."""
+        if not self.found:
+            return self.full
+        education = self.parts.get("education", "")
+        if not education:
+            return self.work_text
+        return self.work_text + "\n" + education
+
+    @cached_property
+    def years_text(self) -> str:
+        """Job dates only. A cert course or a school project is not employment."""
+        if not self.found:
+            return self.full
+        if self.parts.get("experience"):
+            return self.parts["experience"]
+        return self._join("preamble", "summary")
+
+    @cached_property
+    def years_claim_text(self) -> str:
+        """Where an explicit 'N years of experience' claim is trusted."""
+        if not self.found:
+            return self.full
+        return self._join("preamble", "summary", "experience")
+
+
+def _credential_line(line: str) -> bool:
+    """A degree line, not a sentence that happens to mention a doctorate."""
+    text = line.strip()
+    if not text or len(text) > 120 or len(text.split()) > 14:
+        return False
+    if not any(pat.search(text) for _, pat in _DEGREE_PATTERNS):
+        return False
+    return bool(_CREDENTIAL_LEAD.match(text) or _CREDENTIAL_CONTEXT.search(text))
+
+
+def _plain_line(raw: str) -> str:
+    """Drop zero-width characters PDF extractors leave on headings."""
+    text = _INVISIBLE.sub("", raw or "")
+    return text.replace("\u00a0", " ").replace("\u202f", " ").replace("\u2009", " ").strip()
+
+
+def _normalize_heading_label(raw: str) -> str:
+    """Turn '1. E X P E R I E N C E ----' into 'EXPERIENCE'."""
+    text = _plain_line(raw)
+    text = _HEADING_BULLET.sub("", _HEADING_MARK.sub("", text))
+    text = _HEADING_INDEX.sub("", text)
+    text = _HEADING_RULE.sub("", text).strip(" -–—_:|./")
+    tokens = text.split()
+    if len(tokens) >= 6 and all(len(tok) == 1 and tok.isalpha() for tok in tokens):
+        text = "".join(tokens)
+    return " ".join(text.split()).strip(" .")
+
+
+def _section_kind(label: str) -> str | None:
+    cleaned = _normalize_heading_label(label)
+    if not cleaned or len(cleaned) > 60 or len(cleaned.split()) > 6:
+        return None
+    for kind, pat in _SECTION_LABELS:
+        if pat.match(cleaned):
+            return kind
+    return None
+
+
+def _looks_like_list(rest: str) -> bool:
+    """'Python, SQL' is a heading payload. 'Led a team for two years.' is a bullet."""
+    text = rest.strip()
+    if not text or len(text) > 160 or text.endswith("."):
+        return False
+    words = text.split()
+    if len(words) > 14:
+        return False
+    if any(mark in text for mark in (",", "|", "•", "·", ";")):
+        return True
+    return len(words) <= 4
+
+
+def _classify_heading(line: str) -> tuple[str | None, str]:
+    """Return (section, remainder). Remainder is the list after 'Skills: Python, SQL'."""
+    if len(line) > 180:
+        return None, ""
+    stripped = _plain_line(line)
+    stripped = _HEADING_BULLET.sub("", _HEADING_MARK.sub("", stripped)).strip()
+    if not stripped:
+        return None, ""
+    head, sep, rest = stripped.partition(":")
+    if sep:
+        kind = _section_kind(head)
+        if kind and _looks_like_list(rest):
+            return kind, rest.strip()
+    if len(stripped) > 80:
+        return None, ""
+    kind = _section_kind(stripped)
+    if kind:
+        return kind, ""
+    return None, ""
+
+
+_USE_MODEL = object()
+_LABEL_SECTIONS = frozenset({"experience", "skills", "education", "projects"})
+
+
+def _empty_buckets() -> dict[str, list[str]]:
+    return {
+        "preamble": [],
+        "summary": [],
+        "experience": [],
+        "skills": [],
+        "education": [],
+        "projects": [],
+        "other": [],
+    }
+
+
+def _model_section_labels(lines: list[str]) -> dict[int, str] | None:
+    from ai_client import section_labels
+
+    try:
+        return section_labels(lines)
+    except Exception:
+        return None
+
+
+def _normalize_labels(raw: Any, count: int) -> dict[int, str]:
+    if not isinstance(raw, dict):
+        return {}
+    labels: dict[int, str] = {}
+    for key, value in raw.items():
+        try:
+            index = int(key)
+        except (TypeError, ValueError):
+            continue
+        if index < 0 or index >= count:
+            continue
+        section = str(value or "").strip().lower()
+        if section in _LABEL_SECTIONS:
+            labels[index] = section
+    return labels
+
+
+def split_resume_sections(text: str, labeler: Any = _USE_MODEL) -> ResumeSections:
+    """Split resume text on headings. A model may label lines only when no experience heading exists."""
+    buckets = _empty_buckets()
+    current = "preamble"
+    found: set[str] = set()
+    placements: list[tuple[str, str]] = []
+    for raw_line in (text or "").splitlines():
+        line = _plain_line(raw_line)
+        if not line:
+            continue
+        kind, rest = _classify_heading(line)
+        if kind:
+            found.add(kind)
+            current = kind if kind in buckets else "other"
+            if rest:
+                buckets[current].append(rest)
+                placements.append((rest, current))
+            continue
+        buckets[current].append(line)
+        placements.append((line, current))
+
+    def _finish(parts_buckets: dict[str, list[str]], parts_found: set[str]) -> ResumeSections:
+        parts = {key: "\n".join(lines).strip() for key, lines in parts_buckets.items()}
+        return ResumeSections(full=(text or "").strip(), found=frozenset(parts_found), parts=parts)
+
+    # An experience heading is enough. The model is not called.
+    if "experience" in found or not placements:
+        return _finish(buckets, found)
+
+    caller = _model_section_labels if labeler is _USE_MODEL else labeler
+    raw_labels: Any = None
+    if caller is not None:
+        try:
+            raw_labels = caller([line for line, _section in placements])
+        except Exception:
+            raw_labels = None
+    labels = _normalize_labels(raw_labels, len(placements))
+    if not labels:
+        return _finish(buckets, found)
+
+    relabeled = _empty_buckets()
+    relabeled_found: set[str] = set()
+    for index, (line, previous) in enumerate(placements):
+        section = labels.get(index, previous)
+        if section not in relabeled:
+            section = "preamble"
+        relabeled[section].append(line)
+        if section not in ("preamble", "other"):
+            relabeled_found.add(section)
+    return _finish(relabeled, relabeled_found)
+
+
+def experience_section(text: str) -> str:
+    """Experience lines only. Heading detection runs; the model is not asked again here."""
+    sections = split_resume_sections(text, labeler=None)
+    return sections.parts.get("experience") or ""
+
+
+def splice_experience(full: str, bullets: str) -> str:
+    """Replace the experience block in memory. The caller decides when to store it."""
+    sections = split_resume_sections(full, labeler=None)
+    old = sections.parts.get("experience") or ""
+    new = (bullets or "").strip()
+    if old and old in (full or ""):
+        return full.replace(old, new, 1)
+    if not new:
+        return full or ""
+    return (full or "").rstrip() + "\n\nExperience\n" + new + "\n"
+
+
 def parse_resume(
     text: str,
     profile: dict[str, Any] | None = None,
+    overrides: dict[str, Any] | None = None,
+    *,
+    section_labeler: Any = _USE_MODEL,
 ) -> ResumeProfile:
-    """Parse a user's resume text (plus optional profile supplements) into a ResumeProfile."""
+    """Parse a user's resume text (plus optional profile supplements and readout edits)."""
     raw = (text or "").strip()
     profile = profile or {}
+    edits = normalize_overrides(overrides)
 
-    degree_level, degree_label, degree_fields = extract_degrees(raw)
-    languages = [label for label, pat in PROGRAMMING_LANGUAGES if pat.search(raw)]
+    sections = split_resume_sections(raw, labeler=section_labeler)
+    work = sections.work_text
+    if sections.found:
+        resume_years_hint = _combine_years(
+            _explicit_year_values(sections.years_claim_text),
+            _date_intervals(sections.years_text),
+        )
+    else:
+        resume_years_hint = estimate_resume_years(raw)
+    degree_level, degree_label, degree_fields = extract_degrees(sections.degree_text)
+    languages = [label for label, pat in PROGRAMMING_LANGUAGES if pat.search(work)]
 
-    certs_found: list[str] = [label for label, pat in CERTIFICATIONS if pat.search(raw)]
+    certs_found: list[str] = [label for label, pat in CERTIFICATIONS if pat.search(sections.cert_text)]
     certs_seen = {c.lower() for c in certs_found}
     for cert in profile.get("certs") or []:
         canon = _CERT_CANON_LOWER.get(str(cert).strip().lower()) or str(cert).strip()
@@ -939,10 +1563,13 @@ def parse_resume(
             certs_found.append(canon)
             certs_seen.add(canon.lower())
 
-    skills = [label for label, pat in TECHNICAL_SKILLS if pat.search(raw)]
-    roles = [label for label, pat in ROLE_PATTERNS if pat.search(raw)]
+    skills = [label for label, pat in TECHNICAL_SKILLS if pat.search(work)]
+    for label, pat in ALIAS_PATTERNS:
+        if pat.search(work):
+            languages, skills = _place_skill(label, languages, skills)
+    roles = [label for label, pat in ROLE_PATTERNS if pat.search(work)]
 
-    resume_years = estimate_resume_years(raw)
+    resume_years = resume_years_hint
     prof_years = profile.get("years")
     if resume_years is not None:
         years_val = resume_years
@@ -954,7 +1581,7 @@ def parse_resume(
     else:
         years_val = None
 
-    resume_clr = classify_clearance(raw)
+    resume_clr = classify_clearance(work)
     prof_clr = profile.get("clearance") or "none"
     clearance = (
         resume_clr
@@ -965,17 +1592,69 @@ def parse_resume(
         clearance = "none"
 
     already_known = set(languages) | set(certs_found) | set(skills) | set(roles) | set(degree_fields)
-    extra_keywords = _extract_custom_keywords(raw, already_known)
+    extra_keywords = _extract_custom_keywords(work, already_known)
+    folded_extra: list[str] = []
+    for kw in extra_keywords:
+        canon = canonical_skill(kw)
+        if canon in _LANG_NAMES or canon in _SKILL_NAMES:
+            if canon and not _removed(canon, edits["remove_languages"] + edits["remove_skills"]):
+                languages, skills = _place_skill(canon, languages, skills)
+            continue
+        if not _removed(kw, edits["remove_skills"]):
+            folded_extra.append(kw)
+    extra_keywords = folded_extra
+
+    languages = _without(languages, edits["remove_languages"])
+    certs_found = _without(certs_found, edits["remove_certs"])
+    skills = _without(skills, edits["remove_skills"])
+    extra_keywords = _without(extra_keywords, edits["remove_skills"])
+
+    for raw_add in edits["add_languages"]:
+        if _removed(raw_add, edits["remove_languages"]):
+            continue
+        label = canonical_skill(raw_add) or raw_add.strip()
+        if label in _SKILL_NAMES and label not in _LANG_NAMES:
+            skills = _include_one(skills, label)
+        else:
+            languages = _include_one(languages, label)
+    for raw_add in edits["add_skills"]:
+        if _removed(raw_add, edits["remove_skills"]):
+            continue
+        canon = canonical_skill(raw_add)
+        if canon in _LANG_NAMES:
+            languages = _include_one(languages, canon)
+        elif canon in _SKILL_NAMES:
+            skills = _include_one(skills, canon)
+        else:
+            extra_keywords = _include_one(extra_keywords, raw_add.strip())
+    for raw_add in edits["add_certs"]:
+        if _removed(raw_add, edits["remove_certs"]):
+            continue
+        certs_found = _include_one(certs_found, canonical_cert(raw_add) or raw_add.strip())
+
+    if edits["clear_degree"]:
+        degree_level, degree_label, degree_fields = -1, "", []
+    elif edits["degree_level"] is not None:
+        degree_level = int(edits["degree_level"])
+        degree_label = DEGREE_LABELS.get(degree_level, "")
+    if not edits["clear_degree"]:
+        degree_fields = _without(degree_fields, edits["remove_degree_fields"])
+        for raw_field in edits["add_degree_fields"]:
+            if _removed(raw_field, edits["remove_degree_fields"]):
+                continue
+            degree_fields = _include_one(degree_fields, canonical_field(raw_field))
+
     extra_patterns = [
         (kw, keyword_pattern(kw, whole_word=True)) for kw in extra_keywords
     ]
 
     sig_payload = "|".join([
-        "v1",
+        "v6",
         raw,
         str(profile.get("years")),
         ",".join(sorted(str(c) for c in (profile.get("certs") or []))),
         str(profile.get("clearance") or "none"),
+        json.dumps(edits, sort_keys=True, separators=(",", ":")),
     ])
     sig = hashlib.sha256(sig_payload.encode("utf-8", errors="replace")).hexdigest()[:24]
 
@@ -1026,10 +1705,71 @@ def _fmt_years(val: float) -> str:
     return str(int(val)) if float(val).is_integer() else f"{val:g}"
 
 
+def heat_cache_sig(resume: ResumeProfile) -> str:
+    """Cache key: resume content plus the scorer version."""
+    return f"{resume.signature}:{SCORER_VERSION}"
+
+
+def unknown_skill_phrases(text: str, known: set[str] | None = None) -> list[str]:
+    """Skill-like phrases that do not fold to a catalog label. These are the only embedding inputs."""
+    phrases = _extract_custom_keywords(text or "", known or set())
+    unknown: list[str] = []
+    seen: set[str] = set()
+    for phrase in phrases:
+        if canonical_skill(phrase) is not None:
+            continue
+        key = phrase.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unknown.append(phrase)
+    return unknown
+
+
+def _folded_names(*groups: list[str]) -> set[str]:
+    names: set[str] = set()
+    for group in groups:
+        for item in group:
+            names.add(canonical_skill(item) or item)
+    return names
+
+
+def _clean_similar_pairs(pairs: list[Any] | None) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    for item in pairs or []:
+        if isinstance(item, dict):
+            job_phrase = item.get("job")
+            resume_phrase = item.get("resume")
+            sim = item.get("score", 1)
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            job_phrase, resume_phrase = item[0], item[1]
+            sim = item[2] if len(item) > 2 else 1
+        else:
+            continue
+        if not job_phrase or not resume_phrase:
+            continue
+        try:
+            sim_f = float(sim)
+        except (TypeError, ValueError):
+            continue
+        if sim_f < SIMILAR_THRESHOLD:
+            continue
+        cleaned.append({
+            "job": str(job_phrase),
+            "resume": str(resume_phrase),
+            "score": round(sim_f, 3),
+        })
+        if len(cleaned) >= 8:
+            break
+    return cleaned
+
+
 def score_job_resume(
     job: dict[str, Any],
     resume: ResumeProfile,
     keyword: str = "",
+    similar_pairs: list[Any] | None = None,
+    similar_lookup: Any = None,
 ) -> dict[str, Any]:
     """Compute a 0-100 Heat Score based on how well a job aligns with the user's resume.
 
@@ -1049,14 +1789,40 @@ def score_job_resume(
     max_possible = 0.0
     breakdown: list[str] = []
 
-    # 1) Programming Languages (weight 22 when job mentions languages or resume matches any)
+    # Catalog hits first, then alias spellings, so language and skill scores see the same labels.
     job_langs: list[str] = []
+    job_lang_req: list[str] = []
     for label, pat in PROGRAMMING_LANGUAGES:
         if _is_affirmative_in(hay, pat):
             job_langs.append(label)
-    resume_lang_set = set(resume.languages)
-    matched_langs = [lang for lang in job_langs if lang in resume_lang_set]
-    missing_langs = [lang for lang in job_langs if lang not in resume_lang_set]
+            if mention_stance(hay, label, pat=pat) == "required":
+                job_lang_req.append(label)
+    job_skills: list[str] = []
+    job_skill_req: list[str] = []
+    for label, pat in TECHNICAL_SKILLS:
+        if _is_affirmative_in(hay, pat):
+            job_skills.append(label)
+            if mention_stance(hay, label, pat=pat) == "required":
+                job_skill_req.append(label)
+    for label, pat in ALIAS_PATTERNS:
+        if label in job_langs or label in job_skills:
+            continue
+        if not _is_affirmative_in(hay, pat):
+            continue
+        required = mention_stance(hay, label, pat=pat) == "required"
+        if label in _LANG_NAMES:
+            job_langs.append(label)
+            if required:
+                job_lang_req.append(label)
+        elif label in _SKILL_NAMES:
+            job_skills.append(label)
+            if required:
+                job_skill_req.append(label)
+    held = _folded_names(list(resume.languages), list(resume.skills), list(resume.extra_keywords))
+    matched_langs = [lang for lang in job_langs if lang in held]
+    missing_langs = [lang for lang in job_langs if lang not in held]
+
+    # 1) Programming Languages (weight 22 when the job mentions any)
     if job_langs:
         w = 22.0
         max_possible += w
@@ -1105,19 +1871,39 @@ def score_job_resume(
             breakdown.append(f"Certifications (0/{len(job_certs)}): asks for {', '.join(job_certs[:4])}")
 
     # 3) Technical Skills & Resume Keywords (always active, weight 28)
-    job_skills: list[str] = [label for label, pat in TECHNICAL_SKILLS if _is_affirmative_in(hay, pat)]
-    resume_skill_set = set(resume.skills)
-    matched_skills = [s for s in job_skills if s in resume_skill_set]
-    matched_extra = [kw for kw, pat in resume._extra_patterns if _is_affirmative_in(hay, pat)]
+    matched_skills = [s for s in job_skills if s in held]
+    matched_extra = [
+        kw for kw, pat in resume._extra_patterns
+        if canonical_skill(kw) is None and _is_affirmative_in(hay, pat)
+    ]
     all_matched_skills = matched_skills + [kw for kw in matched_extra if kw not in matched_skills]
+
+    known_for_unknown = set(job_langs) | set(job_skills) | set(job_certs) | set(matched_extra)
+    job_unknown = unknown_skill_phrases(hay, known_for_unknown)
+    resume_unknown = [kw for kw in resume.extra_keywords if canonical_skill(kw) is None]
+    if similar_pairs is None and similar_lookup is not None and job_unknown and resume_unknown:
+        try:
+            similar_pairs = similar_lookup(job_unknown, resume_unknown)
+        except Exception:
+            similar_pairs = []
+    similar = _clean_similar_pairs(similar_pairs)
+    # A similar phrase never satisfies a required skill. Exact or alias match does.
+    missing_required_skills: list[str] = []
+    seen_req: set[str] = set()
+    for label in [*job_lang_req, *job_skill_req]:
+        if label in seen_req or label in held:
+            continue
+        seen_req.add(label)
+        missing_required_skills.append(label)
 
     w_skills = 28.0
     max_possible += w_skills
-    if job_skills or all_matched_skills:
+    if job_skills or all_matched_skills or similar:
         cov = (len(matched_skills) / len(job_skills)) if job_skills else 0.0
-        # Saturate depth smoothly around 5-6 distinct matching resume skills/keywords
+        # Saturate depth smoothly around 5-6 distinct matching resume skills/keywords.
+        # Each unknown-skill embedding match counts as half a skill.
         depth_target = max(3, min(len(job_skills) if job_skills else 5, 6))
-        depth = min(len(all_matched_skills) / depth_target, 1.0)
+        depth = min((len(all_matched_skills) + 0.5 * len(similar)) / depth_target, 1.0)
         title_hit = any(
             (_SKILL_BY_NAME[s].search(title) if s in _SKILL_BY_NAME else keyword_pattern(s, whole_word=True).search(title))
             for s in all_matched_skills[:12]
@@ -1133,8 +1919,11 @@ def score_job_resume(
         if extra_n > 0:
             shown += f" +{extra_n} more"
         breakdown.append(f"Skills & keywords ({len(all_matched_skills)}): {shown}")
-    else:
+    elif not similar:
         breakdown.append("Skills & keywords: no resume keywords matched")
+    if similar:
+        shown_sim = ", ".join(f"{item['job']} ~ {item['resume']}" for item in similar[:6])
+        breakdown.append(f"Similar: {shown_sim}")
 
     # 4) Experience: Years + Role/Title alignment (always active, weight 18)
     w_exp = 18.0
@@ -1246,6 +2035,15 @@ def score_job_resume(
         clr_note = f"Clearance: {CLEARANCE_LABELS.get(job_clr, job_clr)} match (+5)"
         breakdown.append(clr_note)
 
+    # Required skills are penalized after normalization so coverage math cannot hide a miss.
+    req_penalty = required_skill_penalty(len(missing_required_skills))
+    if missing_required_skills:
+        raw_score -= req_penalty
+        breakdown.append(
+            "Missing required: " + ", ".join(missing_required_skills[:8])
+            + (f" (-{int(req_penalty)})" if req_penalty else "")
+        )
+
     # Small bonus if scan keyword itself is on resume AND in title
     if keyword and keyword_pattern(keyword).search(resume.raw_text) and keyword_pattern(keyword).search(title):
         raw_score += 3.0
@@ -1271,6 +2069,9 @@ def score_job_resume(
         "certifications": matched_certs,
         "missing_required_certs": missing_req_certs[:5],
         "skills": all_matched_skills[:16],
+        "missing_required_skills": missing_required_skills[:12],
+        "required_penalty": req_penalty,
+        "similar": similar,
         "roles": matched_roles[:5],
         "experience_note": exp_years_note,
         "degree_status": degree_status,

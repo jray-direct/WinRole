@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}{{ material.name }} · Detected · Win Role{% endblock %}
+{% block body %}
+<header class="page-head readout-head">
+  <a class="btn btn-outline-secondary" href="{{ url_for('tracker') }}#materials">← Back to vault</a>
+  <div>
+    <p class="kicker">Resume</p>
+    <h1>{{ material.name }}</h1>
+    <p class="muted">This is what Heat Score uses. Remove anything we got wrong, or add a skill, certification, or degree it missed.</p>
+  </div>
+</header>
+
+{% if material.extract_note %}
+<p class="err">{{ material.extract_note }}</p>
+{% endif %}
+<section class="tracker-card readout">
+  <div class="readout-block">
+    <h2>Skills</h2>
+    <div class="chip-row">
+      {% for skill in skills %}
+      <form method="post">
+        <input type="hidden" name="action" value="remove_skill">
+        <input type="hidden" name="value" value="{{ skill }}">
+        <button type="submit" class="chip-x">{{ skill }} <span aria-hidden="true">×</span></button>
+      </form>
+      {% else %}
+      <span class="muted">None yet.</span>
+      {% endfor %}
+    </div>
+    <form method="post" class="chip-add">
+      <input type="hidden" name="action" value="add_skill">
+      <input type="text" name="value" placeholder="Add a skill" class="form-control" required>
+      <button type="submit" class="btn btn-outline-secondary">Add</button>
+    </form>
+    {% for item in suggestions %}
+    <div class="chip-add" data-suggestion>
+      <span>{{ item.phrase }} → {{ item.label }}</span>
+      <form method="post">
+        <input type="hidden" name="action" value="add_skill">
+        <input type="hidden" name="value" value="{{ item.label }}">
+        <button type="submit" class="btn btn-outline-secondary">Add</button>
+      </form>
+      <button type="button" class="btn btn-outline-secondary" data-dismiss-suggestion>Dismiss</button>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="readout-block">
+    <h2>Languages</h2>
+    <div class="chip-row">
+      {% for language in parsed.languages %}
+      <form method="post">
+        <input type="hidden" name="action" value="remove_language">
+        <input type="hidden" name="value" value="{{ language }}">
+        <button type="submit" class="chip-x">{{ language }} <span aria-hidden="true">×</span></button>
+      </form>
+      {% else %}
+      <span class="muted">None yet.</span>
+      {% endfor %}
+    </div>
+    <form method="post" class="chip-add">
+      <input type="hidden" name="action" value="add_language">
+      <input type="text" name="value" placeholder="Add a language" class="form-control" required>
+      <button type="submit" class="btn btn-outline-secondary">Add</button>
+    </form>
+  </div>
+
+  <div class="readout-block">
+    <h2>Certifications</h2>
+    <div class="chip-row">
+      {% for cert in parsed.certifications %}
+      <form method="post">
+        <input type="hidden" name="action" value="remove_cert">
+        <input type="hidden" name="value" value="{{ cert }}">
+        <button type="submit" class="chip-x">{{ cert }} <span aria-hidden="true">×</span></button>
+      </form>
+      {% else %}
+      <span class="muted">None yet.</span>
+      {% endfor %}
+    </div>
+    <form method="post" class="chip-add">
+      <input type="hidden" name="action" value="add_cert">
+      <input type="text" name="value" placeholder="Add a certification" class="form-control" required>
+      <button type="submit" class="btn btn-outline-secondary">Add</button>
+    </form>
+  </div>
+
+  <div class="readout-block">
+    <h2>Degree</h2>
+    <p class="muted">Scoring uses {{ parsed.degree_label or "no degree" }}{% if parsed.degree_fields %} in {{ parsed.degree_fields | join(", ") }}{% endif %}.</p>
+    <form method="post" class="chip-add">
+      <input type="hidden" name="action" value="set_degree">
+      <select name="degree_level" class="form-select">
+        <option value="detected" {% if degree_choice == 'detected' %}selected{% endif %}>Use what we detected</option>
+        <option value="none" {% if degree_choice == 'none' %}selected{% endif %}>None</option>
+        {% for level, label in degree_labels %}
+        <option value="{{ level }}" {% if degree_choice == level|string %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn btn-outline-secondary">Save degree</button>
+    </form>
+    <div class="chip-row">
+      {% for field_name in parsed.degree_fields %}
+      <form method="post">
+        <input type="hidden" name="action" value="remove_field">
+        <input type="hidden" name="value" value="{{ field_name }}">
+        <button type="submit" class="chip-x">{{ field_name }} <span aria-hidden="true">×</span></button>
+      </form>
+      {% endfor %}
+    </div>
+    <form method="post" class="chip-add">
+      <input type="hidden" name="action" value="add_field">
+      <input type="text" name="value" placeholder="Add a field of study" class="form-control">
+      <button type="submit" class="btn btn-outline-secondary">Add field</button>
+    </form>
+  </div>
+
+  <div class="readout-block readout-meta">
+    <h2>Also used</h2>
+    <p>Years: <strong>{{ years_label }}</strong>. Clearance: <strong>{{ clearance_label }}</strong>. <a href="{{ url_for('profile_page') }}">Edit these on Profile</a>.</p>
+  </div>
+</section>
+{% endblock %}

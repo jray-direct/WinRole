@@ -3,33 +3,26 @@
     <div>
       <p class="kicker">Vault</p>
       <h2>Resumes &amp; cover letters</h2>
-      <p class="muted">Upload versions here, then attach them on a job. Your default resume also drives Heat Score (degree, languages, certs, skills, experience).</p>
+      <p class="muted">Upload a resume here, then pick a cover letter. Your default resume also drives Heat Score.</p>
     </div>
   </div>
-  <form class="scrape-form" method="post" action="{{ url_for('materials') }}" enctype="multipart/form-data" id="vault-upload">
-    <label>Type
-      <select name="kind" required class="form-select">
-        <option value="resume">Resume</option>
-        <option value="cover">Cover letter</option>
-      </select>
-    </label>
-    <label>Name
-      <input type="text" name="name" required placeholder="Network+ resume, AWS cover" class="form-control">
-    </label>
-    <label>File
-      <input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" class="form-control">
-    </label>
-    <label class="check">
-      <input type="checkbox" name="is_default" value="1" class="form-check-input"> Make default for this type
-    </label>
-    <label class="span-2">Paste text (optional)
-      <textarea name="body" rows="6" placeholder="Paste a cover letter…" class="form-control"></textarea>
-    </label>
-    <button type="submit" class="btn btn-primary">Save to vault</button>
-  </form>
   <div class="grid two">
-    <section class="panel">
+    <section class="panel" id="vault-upload">
       <h2>Resumes</h2>
+      <form class="vault-form" method="post" action="{{ url_for('materials') }}" enctype="multipart/form-data">
+        <input type="hidden" name="kind" value="resume">
+        <label>Resume file
+          <input type="file" name="file" required accept=".pdf,.doc,.docx,.txt,.md,.rtf" class="form-control">
+          <span class="hint">PDF, Word, text, Markdown, or RTF.</span>
+        </label>
+        <label>Name
+          <input type="text" name="name" placeholder="Uses the file name if empty" class="form-control">
+        </label>
+        <label class="check">
+          <input type="checkbox" name="is_default" value="1" class="form-check-input"> Make this the default resume
+        </label>
+        <button type="submit" class="btn btn-primary">Upload resume</button>
+      </form>
       {% for m in resumes %}
       <article class="material">
         <div>
@@ -38,6 +31,7 @@
           <div class="muted">{{ m.filename or "text only" }} · {{ m.created_at }}</div>
         </div>
         <div class="inline">
+          <a role="button" class="btn btn-outline-secondary" href="{{ url_for('resume_readout', material_id=m.id) }}">Review detected</a>
           {% if m.path %}
           <a role="button" class="btn btn-outline-secondary" href="{{ url_for('materials_file', material_id=m.id) }}">Download</a>
           {% endif %}
@@ -55,22 +49,30 @@
         {% endif %}
       </article>
       {% else %}
-      <div class="empty-state">
-        <p class="empty-title">No resumes yet</p>
-        <p>Save a PDF or paste text above so you can attach it when you apply.</p>
-        <a class="btn btn-outline-secondary" href="#vault-upload">Upload a resume</a>
-      </div>
+      <p class="muted vault-empty">No resumes saved yet.</p>
       {% endfor %}
     </section>
     <section class="panel">
-      <h2>Cover letters</h2>
+      <h2>Cover letter</h2>
+      {% set chosen = namespace(id=none) %}
       {% for m in covers %}
-      <article class="material">
-        <div>
-          <strong>{{ m.name }}</strong>
-          {% if m.is_default %}<span class="pill">Default</span>{% endif %}
-          <div class="muted">{{ m.filename or "text only" }} · {{ m.created_at }}</div>
-        </div>
+        {% if m.is_default %}{% set chosen.id = m.id %}{% endif %}
+      {% endfor %}
+      {% if chosen.id is none and covers %}{% set chosen.id = covers[0].id %}{% endif %}
+      <label>Saved cover letters
+        <select id="cover-pick" class="form-select">
+          {% if not covers %}
+          <option value="">No cover letters yet</option>
+          {% endif %}
+          {% for m in covers %}
+          <option value="{{ m.id }}" {% if chosen.id == m.id %}selected{% endif %}>{{ m.name }}{% if m.is_default %} (default){% endif %}</option>
+          {% endfor %}
+          <option value="new">Add a cover letter…</option>
+        </select>
+      </label>
+      {% for m in covers %}
+      <div class="cover-detail" data-cover="{{ m.id }}" {% if chosen.id != m.id %}hidden{% endif %}>
+        <div class="muted">{{ m.filename or "text only" }} · {{ m.created_at }}</div>
         <div class="inline">
           {% if m.path %}
           <a role="button" class="btn btn-outline-secondary" href="{{ url_for('materials_file', material_id=m.id) }}">Download</a>
@@ -87,14 +89,38 @@
         {% if m.body %}
         <pre class="body-preview">{{ m.body }}</pre>
         {% endif %}
-      </article>
-      {% else %}
-      <div class="empty-state">
-        <p class="empty-title">No cover letters yet</p>
-        <p>Keep a few variants in the vault and pick one per application.</p>
-        <a class="btn btn-outline-secondary" href="#vault-upload">Add a cover letter</a>
       </div>
       {% endfor %}
+      <form class="vault-form" id="cover-new" method="post" action="{{ url_for('materials') }}" hidden>
+        <input type="hidden" name="kind" value="cover">
+        <label>Name
+          <input type="text" name="name" required placeholder="AWS cover" class="form-control">
+        </label>
+        <label>Cover letter
+          <textarea name="body" rows="6" required placeholder="Paste a cover letter…" class="form-control"></textarea>
+        </label>
+        <label class="check">
+          <input type="checkbox" name="is_default" value="1" class="form-check-input"> Make this the default cover letter
+        </label>
+        <button type="submit" class="btn btn-primary">Save cover letter</button>
+      </form>
     </section>
   </div>
 </div>
+<script>
+(function () {
+  var pick = document.getElementById("cover-pick");
+  if (!pick) return;
+  var details = document.querySelectorAll(".cover-detail");
+  var add = document.getElementById("cover-new");
+  function show() {
+    var value = pick.value;
+    details.forEach(function (el) {
+      el.hidden = el.getAttribute("data-cover") !== value;
+    });
+    if (add) add.hidden = value !== "new";
+  }
+  pick.addEventListener("change", show);
+  show();
+})();
+</script>

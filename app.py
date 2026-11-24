@@ -1,7 +1,7 @@
-"""Local web UI for JobScraper. Run: python app.py
+"""Local web UI for Win Role. Run: python app.py
 
 Sign-in uses the Cognito user pool. Set COGNITO_CLIENT_SECRET to the
-JobScraper app client secret before starting.
+Win Role app client secret before starting.
 """
 
 from __future__ import annotations
@@ -45,13 +45,19 @@ from db import (
     get_job,
     get_latest_run,
     get_material,
+    heat_scores_pending,
     get_profile,
+    job_fit,
     init_db,
     list_keywords,
     list_materials,
     list_runs,
     query_jobs,
+    get_user_resume_profile,
+    resume_profile_for_material,
     save_profile,
+    save_resume_extracted_text,
+    save_resume_overrides,
     set_all_locations_enabled,
     set_default_material,
     save_filter_template,
@@ -61,6 +67,18 @@ from db import (
     tracker_summary,
     update_job_tracker,
 )
+from ai_client import (
+    ai_settings,
+    bullets_are_grounded,
+    draft_cover,
+    explain_job,
+    follow_up_note,
+    interview_questions,
+    suggest_scan_keyword,
+    suggest_unknown_phrases,
+    tailor_bullets,
+)
+from resume import DEGREE_LABELS, experience_section, load_overrides, splice_experience, unknown_skill_phrases
 from scrape import SearchFilters, run_scrape
 from textutil import (
     CERT_STACK,
@@ -254,12 +272,12 @@ def _missing_secret():
     path = Path(__file__).resolve().parent / "cognito_secret.txt"
     body = f"""<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>JobScraper sign-in</title></head>
+<head><meta charset="utf-8"><title>Win Role sign-in</title></head>
 <body style="font-family: sans-serif; max-width: 40rem; margin: 3rem auto; line-height: 1.45">
   <h1>Save the Cognito secret, then reload</h1>
-  <p>The sign-in page stays closed until the app has the JobScraper client secret.</p>
+  <p>The sign-in page stays closed until the app has the Win Role client secret.</p>
   <ol>
-    <li>In Cognito, open the JobScraper app client and copy the client secret.</li>
+    <li>In Cognito, open the Win Role app client and copy the client secret.</li>
     <li>Create this file and paste only the secret into it:<br><code>{path}</code></li>
     <li>Reload this page. It will then send you to the Cognito sign-in page.</li>
   </ol>
@@ -427,6 +445,62 @@ def _prepare_job_view(job: dict[str, Any], extra_keyword: str = "") -> dict[str,
     return job
 
 
+def _attach_fit(job: dict[str, Any] | None, keyword: str) -> None:
+    if not job:
+        return
+    job["fit"] = job_fit(_uid(), job, keyword)
+
+
+_CHIP_ACTIONS = {
+    "add_skill": ("add_skills", "remove_skills"),
+    "remove_skill": ("remove_skills", "add_skills"),
+    "add_language": ("add_languages", "remove_languages"),
+    "remove_language": ("remove_languages", "add_languages"),
+    "add_cert": ("add_certs", "remove_certs"),
+    "remove_cert": ("remove_certs", "add_certs"),
+    "add_field": ("add_degree_fields", "remove_degree_fields"),
+    "remove_field": ("remove_degree_fields", "add_degree_fields"),
+}
+
+
+def _drop_term(items: list[str], value: str) -> list[str]:
+    from resume import canonical_cert, canonical_field, canonical_skill
+
+    keys = {value.casefold()}
+    for canon in (canonical_skill(value), canonical_cert(value)):
+        if canon:
+            keys.add(canon.casefold())
+    field_name = canonical_field(value)
+    if field_name:
+        keys.add(field_name.casefold())
+    return [item for item in items if item.casefold() not in keys]
+
+
+def _apply_readout_action(overrides: dict[str, Any], action: str, value: str, degree_level: str) -> dict[str, Any]:
+    if action == "set_degree":
+        choice = (degree_level or "").strip()
+        if choice == "none":
+            overrides["clear_degree"] = True
+            overrides["degree_level"] = None
+        elif choice == "detected" or choice == "":
+            overrides["clear_degree"] = False
+            overrides["degree_level"] = None
+        else:
+            overrides["clear_degree"] = False
+            overrides["degree_level"] = choice
+        return overrides
+    pair = _CHIP_ACTIONS.get(action)
+    text = (value or "").strip()
+    if pair is None or not text:
+        return overrides
+    keep_key, drop_key = pair
+    overrides[drop_key] = _drop_term(list(overrides.get(drop_key) or []), text)
+    kept = _drop_term(list(overrides.get(keep_key) or []), text)
+    kept.append(text)
+    overrides[keep_key] = kept
+    return overrides
+
+
 @app.route("/")
 def insights():
     last = get_latest_run(_uid())
@@ -535,8 +609,14 @@ def jobs():
     # Ignored and applied jobs are out of the way unless asked for (or filtered to by status).
     filters["hide_closed"] = not filters["show_closed"] and not status_arg
     rows, total = query_jobs(
-        _uid(), filters, limit=per_page, offset=(page - 1) * per_page, profile=profile
+        _uid(),
+        filters,
+        limit=per_page,
+        offset=(page - 1) * per_page,
+        profile=profile,
+        defer_large_scores=True,
     )
+    scores_pending = bool(getattr(rows, "scores_pending", False))
     if partial_rows:
         next_args = {
             k: v
@@ -631,6 +711,7 @@ def jobs():
     selected = get_job(_uid(), selected_id) if selected_id else None
     if selected:
         _prepare_job_view(selected, filters["keyword"])
+        _attach_fit(selected, filters["keyword"])
     state = _scan_snapshot(_uid())
     scan_open = request.args.get("scan") == "1" or bool(state["running"])
     return render_template(
@@ -661,9 +742,11 @@ def jobs():
         active_filters=active_filters,
         state=state,
         scan_open=scan_open,
+        scores_pending=scores_pending,
         grouped=get_grouped_locations(_uid()),
         enabled_count=len(get_enabled_locations(_uid())),
         templates=templates_by_kind(_uid()),
+        ai_ready=ai_settings()["ready"],
         sort_options=[
             ("score", "Heat"),
             ("date", "Date posted"),
@@ -672,6 +755,11 @@ def jobs():
             ("seen", "First seen"),
         ],
     )
+
+
+@app.get("/jobs/heat-status")
+def jobs_heat_status():
+    return jsonify({"pending": heat_scores_pending(_uid())})
 
 
 @app.route("/inbox")
@@ -687,9 +775,11 @@ def job_detail(job_id: int):
         return redirect(url_for("jobs"))
     extra = (request.args.get("keyword") or "").strip()
     _prepare_job_view(job, extra)
+    _attach_fit(job, extra)
     return render_template(
         "job_detail.html",
         job=job,
+        ai_ready=ai_settings()["ready"],
         statuses=STATUSES,
         status_labels=STATUS_LABELS,
         heard_back=HEARD_BACK,
@@ -706,6 +796,7 @@ def job_pane(job_id: int):
         return ("Job not found.", 404)
     extra = (request.args.get("keyword") or "").strip()
     _prepare_job_view(job, extra)
+    _attach_fit(job, extra)
     return_to = (request.args.get("next") or "").strip()
     if not return_to.startswith("/"):
         return_to = url_for("jobs", job=job_id, keyword=extra)
@@ -717,6 +808,7 @@ def job_pane(job_id: int):
         resumes=list_materials(_uid(), "resume"),
         covers=list_materials(_uid(), "cover"),
         return_to=return_to,
+        ai_ready=ai_settings()["ready"],
     )
 
 
@@ -1032,7 +1124,11 @@ def materials():
     uploaded = request.files.get("file")
     try:
         filename, stored = _store_upload(uploaded)
-        add_material(
+        if kind == "resume" and not filename and not body:
+            raise ValueError("Choose a resume file to upload")
+        if not name and filename:
+            name = Path(filename).stem.replace("_", " ").strip()
+        material_id = add_material(
             _uid(),
             kind,
             name,
@@ -1044,7 +1140,252 @@ def materials():
         flash(f"Saved {kind} {name!r}.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
+        return redirect(url_for("tracker") + "#materials")
+    if kind == "resume":
+        loaded = resume_profile_for_material(_uid(), material_id)
+        note = (loaded[0].get("extract_note") if loaded else None) or ""
+        if note:
+            flash(note, "error")
+        elif loaded and not (loaded[1].skills or loaded[1].languages or loaded[1].certifications):
+            flash("Saved the file, but no skills, languages, or certs were detected. Check the readout and add anything it missed.", "info")
+        return redirect(url_for("resume_readout", material_id=material_id))
     return redirect(url_for("tracker") + "#materials")
+
+
+@app.route("/materials/<int:material_id>/readout", methods=["GET", "POST"])
+def resume_readout(material_id: int):
+    loaded = resume_profile_for_material(_uid(), material_id)
+    if loaded is None:
+        flash("Resume not found.", "error")
+        return redirect(url_for("tracker") + "#materials")
+    material, _parsed = loaded
+    if request.method == "POST":
+        edits = load_overrides(material.get("overrides"))
+        edits = _apply_readout_action(
+            edits,
+            (request.form.get("action") or "").strip(),
+            request.form.get("value") or "",
+            request.form.get("degree_level") or "",
+        )
+        try:
+            save_resume_overrides(_uid(), material_id, edits)
+        except ValueError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("resume_readout", material_id=material_id))
+    material, parsed = resume_profile_for_material(_uid(), material_id) or (material, _parsed)
+    edits = load_overrides(material.get("overrides"))
+    if edits.get("clear_degree"):
+        degree_choice = "none"
+    elif edits.get("degree_level") is not None:
+        degree_choice = str(edits["degree_level"])
+    else:
+        degree_choice = "detected"
+    skills = list(parsed.skills)
+    for extra in parsed.extra_keywords:
+        if extra not in skills:
+            skills.append(extra)
+    known = set(parsed.languages) | set(skills) | set(parsed.certifications)
+    suggestions: list[dict[str, str]] = []
+    try:
+        phrases = unknown_skill_phrases(parsed.raw_text, known)
+        suggestions = suggest_unknown_phrases(phrases)
+    except Exception:
+        suggestions = []
+    held = {item.casefold() for item in skills}
+    suggestions = [item for item in suggestions if item["label"].casefold() not in held]
+    years = parsed.experience_years
+    if years is None:
+        years_label = "none detected"
+    elif float(years).is_integer():
+        years_label = str(int(years))
+    else:
+        years_label = f"{years:g}"
+    return render_template(
+        "resume_readout.html",
+        material=material,
+        parsed=parsed,
+        skills=skills,
+        suggestions=suggestions,
+        degree_choice=degree_choice,
+        degree_labels=sorted(DEGREE_LABELS.items()),
+        years_label=years_label,
+        clearance_label=CLEARANCE_LABELS.get(parsed.clearance or "none", parsed.clearance or "none"),
+    )
+
+
+def _job_for_ai(job_id: int) -> dict[str, Any] | None:
+    job = get_job(_uid(), job_id)
+    return job
+
+
+def _resume_for_job(job: dict[str, Any]) -> tuple[dict[str, Any] | None, str, Any]:
+    """The resume on this job, or the default resume. Experience text comes from headings."""
+    material_id = job.get("resume_id")
+    loaded = None
+    if material_id:
+        loaded = resume_profile_for_material(_uid(), int(material_id))
+    if loaded is None:
+        rows = list_materials(_uid(), "resume")
+        if rows:
+            loaded = resume_profile_for_material(_uid(), rows[0]["id"])
+    if loaded is None:
+        return None, "", None
+    material, parsed = loaded
+    return material, experience_section(parsed.raw_text), parsed
+
+
+def _quiet(payload: dict[str, Any] | None = None):
+    body = {"ok": False, "silent": True}
+    if payload:
+        body.update(payload)
+        body["ok"] = False
+        body["silent"] = True
+    return jsonify(body)
+
+
+@app.post("/jobs/<int:job_id>/explain")
+def job_explain(job_id: int):
+    return _ai_response(job_id, "explain")
+
+
+@app.post("/jobs/<int:job_id>/cover-draft")
+def job_cover_draft(job_id: int):
+    return _ai_response(job_id, "cover")
+
+
+@app.post("/jobs/<int:job_id>/bullets")
+def job_bullets(job_id: int):
+    return _ai_response(job_id, "bullets")
+
+
+@app.post("/jobs/<int:job_id>/interview")
+def job_interview(job_id: int):
+    return _ai_response(job_id, "interview")
+
+
+def _ai_response(job_id: int, kind: str):
+    if not ai_settings()["ready"]:
+        return jsonify({
+            "ok": False,
+            "message": "Set AI_API_KEY to explain jobs and draft cover letters.",
+        })
+    job = _job_for_ai(job_id)
+    if job is None:
+        return jsonify({"ok": False, "message": "Job not found."}), 404
+    keyword = (request.args.get("keyword") or "").strip()
+    fit = job_fit(_uid(), job, keyword)
+    _material, experience, parsed = _resume_for_job(job)
+    try:
+        if kind == "explain":
+            text = explain_job(job, fit)
+            if not text:
+                return _quiet()
+            return jsonify({"ok": True, "kind": kind, "text": text})
+        if kind == "cover":
+            text = draft_cover(job, fit, experience)
+            if not text:
+                return _quiet()
+            return jsonify({"ok": True, "kind": kind, "text": text})
+        if kind == "bullets":
+            text = tailor_bullets(experience, job.get("description") or "", job_id=job_id)
+            if not text:
+                return _quiet()
+            return jsonify({"ok": True, "kind": kind, "text": text})
+        if kind == "interview":
+            held: list[str] = []
+            if parsed is not None:
+                for group in (parsed.skills, parsed.languages, parsed.certifications, parsed.extra_keywords):
+                    for item in group:
+                        if item not in held:
+                            held.append(item)
+            questions = interview_questions(
+                held,
+                fit.get("missing_required") or [],
+                job.get("description") or "",
+                job_id=job_id,
+            )
+            if not questions:
+                return _quiet()
+            return jsonify({"ok": True, "kind": kind, "questions": questions})
+    except Exception:
+        return _quiet()
+    return _quiet()
+
+
+@app.post("/jobs/<int:job_id>/bullets-save")
+def job_bullets_save(job_id: int):
+    job = get_job(_uid(), job_id)
+    if job is None:
+        return jsonify({"ok": False, "message": "Job not found."}), 404
+    data = request.get_json(silent=True) or {}
+    bullets = (data.get("body") or "").strip()
+    material, experience, _parsed = _resume_for_job(job)
+    if material is None or not bullets:
+        return jsonify({"ok": False, "message": "Nothing to save."}), 400
+    if not bullets_are_grounded(bullets, experience):
+        return jsonify({
+            "ok": False,
+            "message": "That draft adds a tool or duty that is not in the experience section.",
+        }), 400
+    path_before = material.get("path")
+    updated = splice_experience(_parsed.raw_text if _parsed is not None else "", bullets)
+    try:
+        save_resume_extracted_text(_uid(), int(material["id"]), updated)
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    stored = get_material(_uid(), int(material["id"]))
+    if stored is None or stored.get("path") != path_before:
+        return jsonify({"ok": False, "message": "The resume file was left unchanged."}), 400
+    return jsonify({"ok": True})
+
+
+@app.post("/jobs/<int:job_id>/follow-up-note")
+def job_follow_up_note(job_id: int):
+    job = get_job(_uid(), job_id)
+    if job is None:
+        return jsonify({"ok": False, "message": "Job not found."}), 404
+    status_before = job.get("status")
+    notes_before = job.get("notes") or ""
+    note = follow_up_note(status_before or "", notes_before)
+    stored = get_job(_uid(), job_id)
+    if stored is None or stored.get("status") != status_before or (stored.get("notes") or "") != notes_before:
+        return jsonify({"ok": False, "message": "Status was left unchanged."}), 400
+    if not note:
+        return _quiet()
+    return jsonify({"ok": True, "notes": note})
+
+
+@app.post("/scrape/suggest-keyword")
+def suggest_keyword():
+    resume = get_user_resume_profile(_uid())
+    if resume is None:
+        return _quiet()
+    keyword = suggest_scan_keyword(
+        [*resume.skills, *resume.extra_keywords],
+        resume.languages,
+        resume.certifications,
+    )
+    if not keyword:
+        return _quiet()
+    return jsonify({"ok": True, "keyword": keyword})
+
+
+@app.post("/jobs/<int:job_id>/cover-save")
+def job_cover_save(job_id: int):
+    job = get_job(_uid(), job_id)
+    if job is None:
+        return jsonify({"ok": False, "message": "Job not found."}), 404
+    data = request.get_json(silent=True) or {}
+    body = (data.get("body") or "").strip()
+    if not body:
+        return jsonify({"ok": False, "message": "Nothing to save."}), 400
+    title = (job.get("title") or "role").strip() or "role"
+    name = (data.get("name") or "").strip() or f"Cover · {title[:48]}"
+    try:
+        material_id = add_material(_uid(), "cover", name, body=body)
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    return jsonify({"ok": True, "id": material_id, "name": name})
 
 
 @app.post("/materials/<int:material_id>/default")
@@ -1148,7 +1489,12 @@ def profile_page():
 
 def main() -> None:
     init_db()
-    print("JobScraper UI  ->  http://127.0.0.1:5050")
+    try:
+        import pymupdf  # noqa: F401
+    except ImportError:
+        print("WARNING: pymupdf is not installed, so PDF resumes will not parse.")
+        print("         From this folder: venv\\Scripts\\python.exe -m pip install -r requirements.txt")
+    print("Win Role  ->  http://127.0.0.1:5050")
     app.run(host="127.0.0.1", port=5050, debug=False, threaded=True)
 
 

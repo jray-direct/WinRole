@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import re
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any
 
 from markupsafe import Markup
@@ -84,18 +85,22 @@ def _sentence_at(text: str, start: int, end: int) -> str:
     return text[left + 1 : right + 1].strip()
 
 
-def _mention_is_negated(sentence: str, match: re.Match[str]) -> bool:
-    """True when the hit is 'no X required' / 'X not needed', not a real requirement."""
-    term = re.escape(match.group(0))
-    local = sentence
-    checks = [
+@lru_cache(maxsize=512)
+def _negation_patterns(term: str) -> tuple[re.Pattern[str], ...]:
+    checks = (
         rf"\b(no|not|without|never|neither)\b.{{0,48}}{term}",
         rf"\b(does\s+not|doesn't|doesn’t|do\s+not|don't|don’t|is\s+not|isn't|isn’t|are\s+not|aren't|aren’t)\b.{{0,48}}{term}",
         rf"{term}.{{0,40}}\b(not\s+(required|needed|necessary|a\s+requirement)|is\s+not\s+(required|needed)|are\s+not\s+(required|needed))",
         rf"\b(not\s+(require[ds]?|need(?:ed)?|necessary))\b.{{0,32}}{term}",
         rf"\b(unrelated\s+to|except(\s+for)?|other\s+than)\b.{{0,24}}{term}",
-    ]
-    return any(re.search(p, local, re.IGNORECASE) for p in checks)
+    )
+    return tuple(re.compile(pat, re.IGNORECASE) for pat in checks)
+
+
+def _mention_is_negated(sentence: str, match: re.Match[str]) -> bool:
+    """True when the hit is 'no X required' / 'X not needed', not a real requirement."""
+    term = re.escape(match.group(0))
+    return any(pat.search(sentence) for pat in _negation_patterns(term))
 
 
 def has_affirmative_mention(text: str, term: str) -> bool:

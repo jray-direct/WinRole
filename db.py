@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
+import threading
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from resume import (
     ResumeProfile,
+    extract_resume_detail,
     extract_resume_text,
+    heat_cache_sig,
     heat_tier,
+    load_overrides,
+    normalize_overrides,
     parse_resume,
     score_job_resume,
 )
@@ -469,6 +475,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     mat_cols = {row[1] for row in conn.execute("PRAGMA table_info(materials)")}
     if "extracted_text" not in mat_cols:
         conn.execute("ALTER TABLE materials ADD COLUMN extracted_text TEXT")
+    if "overrides" not in mat_cols:
+        conn.execute("ALTER TABLE materials ADD COLUMN overrides TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_years_min ON jobs(years_min)")
     conn.execute(
         """
@@ -512,6 +520,28 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_job_heat_sig ON job_heat_scores(user_id, resume_sig)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS embedding_cache (
+            owner TEXT NOT NULL,
+            phrase TEXT NOT NULL,
+            vector TEXT NOT NULL,
+            PRIMARY KEY (owner, phrase)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ai_cache (
+            task TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_hash TEXT NOT NULL,
+            answer TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (task, model, input_hash)
+        )
+        """
+    )
 
 
 def _table_cols(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -806,6 +836,29 @@ def enrich_text(title: Any, description: Any) -> dict[str, Any]:
 
 def keyword_stance(title: Any, description: Any, keyword: str) -> str:
     return mention_stance(f"{title or ''}\n{description or ''}", keyword, pat=keyword_pattern(keyword))
+
+
+def stance_for_new_posting(
+    title: Any,
+    description: Any,
+    keyword: str,
+    *,
+    allow_model: bool,
+    db_path: Path | None = None,
+) -> str:
+    """Regex stance. On a new posting, the model may only fill a stance the regex left as mentioned."""
+    stance = keyword_stance(title, description, keyword)
+    if not allow_model or stance != "mentioned":
+        return stance
+    try:
+        from ai_client import requirement_stance
+
+        filled = requirement_stance(title, description, keyword, db_path=db_path)
+    except Exception:
+        return stance
+    if filled in ("required", "preferred", "mentioned"):
+        return filled
+    return stance
 
 
 def _backfill_enrichment(conn: sqlite3.Connection) -> dict[str, int]:
@@ -1410,7 +1463,9 @@ def upsert_jobs(
                 enriched = enrich_text(row["title"], row["description"])
                 payload = {**row, **enriched, "now": now}
                 desc = payload["description"]
-                stance = keyword_stance(row["title"], desc, keyword)
+                stance = stance_for_new_posting(
+                    row["title"], desc, keyword, allow_model=True, db_path=db_path
+                )
                 prepared.append((True, payload, stance))
                 existing_map[key] = {
                     "id": None,
@@ -1433,7 +1488,9 @@ def upsert_jobs(
                     "id": existing["id"],
                 }
                 desc = payload["description"]
-                stance = keyword_stance(row.get("title"), desc, keyword)
+                stance = stance_for_new_posting(
+                    row.get("title"), desc, keyword, allow_model=False, db_path=db_path
+                )
                 prepared.append((False, payload, stance))
                 existing["title"] = title_for_enrich
                 existing["description"] = desc
@@ -1759,8 +1816,11 @@ def _material_text(mat: dict[str, Any], *, persist: bool = False, db_path: Path 
         return body
     path = _resolve_material_path(mat.get("path"))
     if path is None:
+        mat["extract_note"] = "The uploaded file is missing on disk."
         return ""
-    text = extract_resume_text(path).strip()
+    text, note = extract_resume_detail(path)
+    text = text.strip()
+    mat["extract_note"] = None if text else note
     if text and persist and mat.get("id") is not None:
         with connect(db_path) as conn:
             conn.execute(
@@ -1797,8 +1857,8 @@ def get_user_resume_profile(
         return None
     if profile is None:
         profile = get_profile(user_id, db_path)
-    # parse_resume builds a content signature from text + profile supplements.
-    probe = parse_resume(text, profile)
+    # parse_resume builds a content signature from text, profile supplements, and readout edits.
+    probe = parse_resume(text, profile, load_overrides(mat.get("overrides")))
     cached = _RESUME_PROFILE_CACHE.get(probe.signature)
     if cached is not None:
         return cached
@@ -1825,61 +1885,102 @@ def _ensure_job_descriptions(
             row["description"] = by_id.get(row["id"], "")
 
 
-def _apply_resume_heat_scores(
+# A fresh resume invalidates every cached Heat Score. Scoring that set inside the
+# page request is what freezes the Jobs tab, so anything past this stays on a
+# background thread and the list renders from the cache it already has.
+HEAT_SCORE_INLINE_LIMIT = 80
+_heat_guard = threading.Lock()
+_heat_active: set[tuple[int, str, str]] = set()
+_heat_threads: dict[tuple[int, str, str], threading.Thread] = {}
+
+
+def _heat_key(user_id: int, sig: str, db_path: Path | None) -> tuple[int, str, str]:
+    return (user_id, sig, str(db_path) if db_path else "")
+
+
+def heat_scores_pending(user_id: int | None = None) -> bool:
+    """True while a background rescore is still writing this user's Heat Scores."""
+    with _heat_guard:
+        if user_id is None:
+            return bool(_heat_active)
+        return any(item[0] == user_id for item in _heat_active)
+
+
+def wait_for_heat_scores(user_id: int, timeout: float = 30) -> None:
+    with _heat_guard:
+        threads = [thread for key, thread in _heat_threads.items() if key[0] == user_id]
+    for thread in threads:
+        thread.join(timeout)
+
+
+def _mark_score_pending(row: dict[str, Any]) -> None:
+    row["score"] = None
+    row["score_pending"] = True
+    row["score_tip"] = "Updating heat score"
+    row["heat_tier"] = ""
+    row["score_details"] = {}
+
+
+def _jobs_for_heat(job_ids: list[int], db_path: Path | None) -> list[dict[str, Any]]:
+    if not job_ids:
+        return []
+    placeholders = ",".join("?" * len(job_ids))
+    with connect(db_path) as conn:
+        fetched = conn.execute(
+            f"""
+            SELECT id, title, description, years_min, years_max, years_pref,
+                   is_remote, clearance
+            FROM jobs WHERE id IN ({placeholders})
+            """,
+            job_ids,
+        ).fetchall()
+    return [dict(row) for row in fetched]
+
+
+def _score_heat_rows(
     user_id: int,
     rows: list[dict[str, Any]],
     resume: ResumeProfile,
-    keyword: str = "",
-    db_path: Path | None = None,
+    keyword: str,
+    db_path: Path | None,
+    *,
+    ignore_errors: bool = False,
 ) -> None:
-    """Attach resume Heat Score to each row, using job_heat_scores as a cache."""
     if not rows:
         return
-    ids = [row["id"] for row in rows]
-    placeholders = ",".join("?" * len(ids))
-    with connect(db_path) as conn:
-        cached_rows = conn.execute(
-            f"""
-            SELECT job_id, resume_sig, score, tier, tooltip
-            FROM job_heat_scores
-            WHERE user_id = ? AND job_id IN ({placeholders})
-            """,
-            [user_id, *ids],
-        ).fetchall()
-    cached = {r["job_id"]: dict(r) for r in cached_rows}
-
-    need: list[dict[str, Any]] = []
-    for row in rows:
-        hit = cached.get(row["id"])
-        if hit and hit.get("resume_sig") == resume.signature:
-            row["score"] = float(hit["score"])
-            row["score_tip"] = hit.get("tooltip") or ""
-            row["heat_tier"] = hit.get("tier") or heat_tier(float(hit["score"]))
-        else:
-            need.append(row)
-
-    if not need:
-        return
-
-    _ensure_job_descriptions(need, db_path)
+    sig = heat_cache_sig(resume)
+    _ensure_job_descriptions(rows, db_path)
     upserts: list[tuple[Any, ...]] = []
-    for row in need:
-        result = score_job_resume(row, resume, keyword)
+    for row in rows:
+        try:
+            result = score_job_resume(
+                row,
+                resume,
+                keyword,
+                similar_lookup=_similar_lookup(row, resume, db_path),
+            )
+        except Exception:
+            if not ignore_errors:
+                raise
+            continue
         row["score"] = result["score"]
         row["score_tip"] = result["tooltip"]
         row["heat_tier"] = result["tier"]
+        row["score_details"] = result.get("details") or {}
+        row["score_pending"] = False
         upserts.append(
             (
                 user_id,
                 row["id"],
-                resume.signature,
+                sig,
                 result["score"],
                 result["tier"],
                 result["tooltip"],
-                json.dumps(result.get("details") or {}, ensure_ascii=False),
+                json.dumps(row["score_details"], ensure_ascii=False),
             )
         )
-
+    if not upserts:
+        return
     with connect(db_path) as conn:
         conn.executemany(
             """
@@ -1896,6 +1997,297 @@ def _apply_resume_heat_scores(
             upserts,
         )
         conn.commit()
+
+
+def _heat_refresh_worker(
+    user_id: int,
+    resume: ResumeProfile,
+    keyword: str,
+    job_ids: list[int],
+    db_path: Path | None,
+    key: tuple[int, str, str],
+) -> None:
+    sig = key[1]
+    try:
+        step = 40
+        for start in range(0, len(job_ids), step):
+            fresh = get_user_resume_profile(user_id, None, db_path)
+            if fresh is None or heat_cache_sig(fresh) != sig:
+                return
+            rows = _jobs_for_heat(job_ids[start : start + step], db_path)
+            _score_heat_rows(user_id, rows, fresh, keyword, db_path, ignore_errors=True)
+    finally:
+        with _heat_guard:
+            _heat_active.discard(key)
+            _heat_threads.pop(key, None)
+
+
+def _schedule_heat_refresh(
+    user_id: int,
+    resume: ResumeProfile,
+    keyword: str,
+    job_ids: list[int],
+    db_path: Path | None,
+) -> None:
+    if not job_ids:
+        return
+    key = _heat_key(user_id, heat_cache_sig(resume), db_path)
+    with _heat_guard:
+        if key in _heat_active:
+            return
+        thread = threading.Thread(
+            target=_heat_refresh_worker,
+            args=(user_id, resume, keyword, list(job_ids), db_path, key),
+            name="heat-scores",
+            daemon=True,
+        )
+        _heat_active.add(key)
+        _heat_threads[key] = thread
+    thread.start()
+
+
+def _apply_resume_heat_scores(
+    user_id: int,
+    rows: list[dict[str, Any]],
+    resume: ResumeProfile,
+    keyword: str = "",
+    db_path: Path | None = None,
+    *,
+    defer: bool = False,
+) -> bool:
+    """Attach resume Heat Score to each row, using job_heat_scores as a cache.
+
+    Returns True when the uncached rows were left for a background rescore.
+    """
+    if not rows:
+        return False
+    ids = [row["id"] for row in rows]
+    placeholders = ",".join("?" * len(ids))
+    with connect(db_path) as conn:
+        cached_rows = conn.execute(
+            f"""
+            SELECT job_id, resume_sig, score, tier, tooltip, details_json
+            FROM job_heat_scores
+            WHERE user_id = ? AND job_id IN ({placeholders})
+            """,
+            [user_id, *ids],
+        ).fetchall()
+    cached = {r["job_id"]: dict(r) for r in cached_rows}
+
+    sig = heat_cache_sig(resume)
+    need: list[dict[str, Any]] = []
+    for row in rows:
+        hit = cached.get(row["id"])
+        if hit and hit.get("resume_sig") == sig:
+            row["score"] = float(hit["score"])
+            row["score_tip"] = hit.get("tooltip") or ""
+            row["heat_tier"] = hit.get("tier") or heat_tier(float(hit["score"]))
+            row["score_details"] = _json_dict(hit.get("details_json"))
+            row["score_pending"] = False
+        else:
+            need.append(row)
+
+    if not need:
+        return False
+    if defer and len(need) > HEAT_SCORE_INLINE_LIMIT:
+        _schedule_heat_refresh(user_id, resume, keyword, [int(row["id"]) for row in need], db_path)
+        for row in need:
+            _mark_score_pending(row)
+        return True
+
+    _score_heat_rows(user_id, need, resume, keyword, db_path)
+    return False
+
+
+def _vectors_for(owner: str, phrases: list[str], db_path: Path | None = None) -> dict[str, list[float]]:
+    """Cached embedding vectors for one owner. Missing phrases are embedded once."""
+    wanted = [phrase for phrase in phrases if phrase]
+    if not wanted:
+        return {}
+    init_db(db_path)
+    placeholders = ",".join("?" * len(wanted))
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT phrase, vector FROM embedding_cache WHERE owner = ? AND phrase IN ({placeholders})",
+            [owner, *wanted],
+        ).fetchall()
+    found: dict[str, list[float]] = {}
+    for row in rows:
+        try:
+            vec = json.loads(row["vector"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(vec, list):
+            found[row["phrase"]] = vec
+    missing = [phrase for phrase in wanted if phrase not in found]
+    if not missing:
+        return found
+    from embeddings import embed_phrases
+
+    fresh = embed_phrases(missing)
+    if not fresh:
+        return found
+    with connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO embedding_cache (owner, phrase, vector)
+            VALUES (?, ?, ?)
+            ON CONFLICT(owner, phrase) DO UPDATE SET vector = excluded.vector
+            """,
+            [(owner, phrase, json.dumps(vec)) for phrase, vec in fresh.items()],
+        )
+        conn.commit()
+    found.update(fresh)
+    return found
+
+
+def cached_vectors(owner: str, phrases: list[str], db_path: Path | None = None) -> dict[str, list[float]]:
+    return _vectors_for(owner, phrases, db_path)
+
+
+def ai_cache_get(
+    task: str,
+    model: str,
+    input_hash: str,
+    db_path: Path | None = None,
+) -> str | None:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT answer FROM ai_cache WHERE task = ? AND model = ? AND input_hash = ?",
+            (task, model, input_hash),
+        ).fetchone()
+    if row is None:
+        return None
+    return str(row["answer"])
+
+
+def ai_cache_put(
+    task: str,
+    model: str,
+    input_hash: str,
+    answer: str,
+    db_path: Path | None = None,
+) -> None:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO ai_cache (task, model, input_hash, answer, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(task, model, input_hash) DO UPDATE SET
+                answer = excluded.answer,
+                created_at = excluded.created_at
+            """,
+            (task, model, input_hash, answer, utc_now()),
+        )
+        conn.commit()
+
+
+def similar_skill_pairs(
+    job: dict[str, Any],
+    resume: ResumeProfile,
+    job_phrases: list[str],
+    resume_phrases: list[str],
+    db_path: Path | None = None,
+) -> list[tuple[str, str, float]]:
+    """Cosine matches for unknown skills only. Empty when the local model is unavailable."""
+    if not job_phrases or not resume_phrases:
+        return []
+    from embeddings import best_similar_pairs
+
+    desc = f"{job.get('title') or ''}\n{job.get('description') or ''}"
+    digest = hashlib.sha256(desc.encode("utf-8", errors="replace")).hexdigest()[:16]
+    job_owner = f"job:{job.get('id') or 0}:{digest}"
+    resume_owner = f"resume:{resume.signature}"
+    vectors = _vectors_for(job_owner, job_phrases, db_path)
+    vectors.update(_vectors_for(resume_owner, resume_phrases, db_path))
+    if not vectors:
+        return []
+    return best_similar_pairs(job_phrases, resume_phrases, vectors)
+
+
+def _similar_lookup(job: dict[str, Any], resume: ResumeProfile, db_path: Path | None = None):
+    def _lookup(job_phrases: list[str], resume_phrases: list[str]):
+        return similar_skill_pairs(job, resume, job_phrases, resume_phrases, db_path)
+
+    return _lookup
+
+
+def job_fit(
+    user_id: int,
+    job: dict[str, Any],
+    keyword: str = "",
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Fit note for one job: matched, missing required, degree, and years."""
+    resume = get_user_resume_profile(user_id, None, db_path)
+    if resume is None:
+        profile = get_profile(user_id, db_path)
+        score, parts = score_job(job, keyword, profile)
+        tip = score_tooltip(parts)
+        note = (
+            "No resume uploaded — using profile fit score.\n"
+            "Upload a default resume for a Heat Score based on degree, "
+            "languages, certifications, skills, and experience.\n"
+            + tip
+        )
+        return {
+            "has_resume": False,
+            "score": score,
+            "tier": heat_tier(float(score or 0)),
+            "note": note,
+            "sentence": "",
+            "matched": [],
+            "missing_required": [],
+            "degree": "",
+            "years": "",
+            "similar": [],
+        }
+    _apply_resume_heat_scores(user_id, [job], resume, keyword, db_path)
+    details = job.get("score_details") or {}
+    matched: list[str] = []
+    for key in ("languages", "skills", "certifications"):
+        for item in details.get(key) or []:
+            if item not in matched:
+                matched.append(item)
+    missing: list[str] = list(details.get("missing_required_skills") or [])
+    for cert in details.get("missing_required_certs") or []:
+        if cert not in missing:
+            missing.append(cert)
+    degree = details.get("degree_status") or ""
+    years = details.get("experience_note") or ""
+    score = job.get("score")
+    sentence = ""
+    try:
+        from ai_client import fit_sentence
+
+        written = fit_sentence(
+            matched,
+            missing,
+            degree,
+            years,
+            job_id=job.get("id"),
+            resume_sig=resume.signature,
+            db_path=db_path,
+            timeout=3,
+        )
+        sentence = written or ""
+    except Exception:
+        sentence = ""
+    job["score"] = score
+    return {
+        "has_resume": True,
+        "score": score,
+        "tier": job.get("heat_tier") or heat_tier(float(score or 0)),
+        "note": "",
+        "sentence": sentence,
+        "matched": matched,
+        "missing_required": missing,
+        "degree": degree,
+        "years": years,
+        "similar": details.get("similar") or [],
+    }
 
 
 def _job_filters_sql(user_id: int, filters: dict[str, Any]) -> tuple[str, list[Any]]:
@@ -2060,6 +2452,12 @@ uj.resume_id, uj.cover_id
 _NO_PROFILE = object()
 
 
+class JobPage(list):
+    """One page of jobs. scores_pending is set when a background rescore is running."""
+
+    scores_pending: bool = False
+
+
 def query_jobs(
     user_id: int,
     filters: dict[str, Any] | None = None,
@@ -2068,6 +2466,7 @@ def query_jobs(
     offset: int = 0,
     profile: Any = _NO_PROFILE,
     db_path: Path | None = None,
+    defer_large_scores: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
     init_db(db_path)
     filters = filters or {}
@@ -2112,8 +2511,18 @@ def query_jobs(
         rows = kept
     today = date.today().isoformat()
     resume = get_user_resume_profile(user_id, profile if isinstance(profile, dict) else None, db_path)
+    scores_pending = False
     if resume is not None:
-        _apply_resume_heat_scores(user_id, rows, resume, keyword, db_path)
+        scores_pending = _apply_resume_heat_scores(
+            user_id,
+            rows,
+            resume,
+            keyword,
+            db_path,
+            defer=defer_large_scores,
+        )
+    if scores_pending and order == "score":
+        order = "date"
     for row in rows:
         if resume is None:
             row["score"], parts = score_job(row, keyword, profile)
@@ -2151,7 +2560,8 @@ def query_jobs(
         row.pop("description", None)
     _sort_jobs(rows, order)
     total = len(rows)
-    page = rows[offset : offset + limit]
+    page = JobPage(rows[offset : offset + limit])
+    page.scores_pending = scores_pending
     if page:
         ids = [row["id"] for row in page]
         placeholders = ",".join("?" * len(ids))
@@ -2784,6 +3194,66 @@ def get_material(user_id: int, material_id: int, db_path: Path | None = None) ->
     init_db(db_path)
     with connect(db_path) as conn:
         return _material_row(conn, user_id, material_id)
+
+
+def resume_profile_for_material(
+    user_id: int,
+    material_id: int,
+    db_path: Path | None = None,
+) -> tuple[dict[str, Any], ResumeProfile] | None:
+    """Parsed resume for the readout page, including saved add/remove edits."""
+    mat = get_material(user_id, material_id, db_path)
+    if mat is None or mat.get("kind") != "resume":
+        return None
+    text = _material_text(mat, persist=True, db_path=db_path)
+    profile = get_profile(user_id, db_path) or {}
+    parsed = parse_resume(text, profile, load_overrides(mat.get("overrides")))
+    return mat, parsed
+
+
+def save_resume_extracted_text(
+    user_id: int,
+    material_id: int,
+    text: str,
+    db_path: Path | None = None,
+) -> None:
+    """Store tailored resume text. The uploaded file path is left as it is."""
+    init_db(db_path)
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT path FROM materials WHERE id = ? AND user_id = ? AND kind = 'resume'",
+            (material_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Resume not found")
+        conn.execute(
+            "UPDATE materials SET extracted_text = ? WHERE id = ? AND user_id = ? AND kind = 'resume'",
+            (text, material_id, user_id),
+        )
+        conn.commit()
+    _RESUME_PROFILE_CACHE.clear()
+
+
+def save_resume_overrides(
+    user_id: int,
+    material_id: int,
+    overrides: dict[str, Any],
+    db_path: Path | None = None,
+) -> None:
+    payload = json.dumps(normalize_overrides(overrides), ensure_ascii=False)
+    init_db(db_path)
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE materials SET overrides = ?
+            WHERE id = ? AND user_id = ? AND kind = 'resume'
+            """,
+            (payload, material_id, user_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise ValueError("Resume not found")
+    _RESUME_PROFILE_CACHE.clear()
 
 
 def add_material(

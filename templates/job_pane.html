@@ -86,5 +86,7 @@
       {% endif %}
     </div>
   </form>
+  {% set fit = job.fit %}
+  {% include "_fit_note.html" %}
   <div class="desc">{{ job.highlighted_description }}</div>
 </article>

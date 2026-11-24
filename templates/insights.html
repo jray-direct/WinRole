@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Insights · JobScraper{% endblock %}
+{% block title %}Insights · Win Role{% endblock %}
 {% macro bar(row, href=None, cls="", show_pct=False) %}
 <div class="bar-row">
   {% if href %}<a class="bar-label" href="{{ href }}" title="Open {{ row.label }} in Jobs">{{ row.label }}</a>
@@ -25,15 +25,11 @@
     <h1>Insights{% if insights.keyword %} · {{ insights.keyword }}{% endif %}</h1>
     <p class="muted">{{ insights.total }} jobs in this view · {{ insights.locations_enabled }}/{{ insights.locations_total }} locations on</p>
   </div>
-  <div class="head-actions">
-    {% if insights.total %}
-    <a class="btn btn-primary" href="{{ url_for('jobs', keyword=kw or '', f=1) }}">Open Jobs for this scope</a>
-    {% else %}
-    <a class="btn btn-primary" href="{{ url_for('jobs', scan=1) }}">New scan</a>
-    {% endif %}
+  <div class="head-actions scope-actions">
     <form class="scope" method="get">
-      <label>Scope
-        <select name="keyword" onchange="this.form.submit()" class="form-select">
+      <label>
+        <span class="scope-kicker">Scope</span>
+        <select name="keyword" onchange="this.form.submit()" class="form-select" aria-label="Scope">
           <option value="">All stored jobs</option>
           {% for k in keywords %}
           <option value="{{ k.keyword }}" {% if selected_keyword == k.keyword %}selected{% endif %}>
@@ -43,6 +39,11 @@
         </select>
       </label>
     </form>
+    {% if insights.total %}
+    <a class="btn btn-primary" href="{{ url_for('jobs', keyword=kw or '', f=1) }}">Open Jobs for this scope</a>
+    {% else %}
+    <a class="btn btn-primary" href="{{ url_for('jobs', scan=1) }}">New scan</a>
+    {% endif %}
   </div>
 </header>
 

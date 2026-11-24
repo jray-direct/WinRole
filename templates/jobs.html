@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import templated_field %}
-{% block title %}Jobs · JobScraper{% endblock %}
+{% block title %}Jobs · Win Role{% endblock %}
 {% block body_class %}split-jobs{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block body %}
@@ -14,6 +14,9 @@
     <p class="kicker">Triage</p>
     <h1>Jobs</h1>
     <p class="muted">{% if total %}<span id="jobs-shown">{{ jobs|length }}</span> of {{ total }} match{% else %}No jobs in this view{% endif %}</p>
+    {% if scores_pending %}
+    <p class="list-hint" id="scores-pending" role="status">Updating heat scores for this resume. Showing newest first until those scores are ready.</p>
+    {% endif %}
   </div>
   <div class="head-actions">
     {% if state.running %}<span class="pill">Scan running</span>{% endif %}
@@ -45,6 +48,7 @@
           <label>What role are you hunting?
             <input type="text" id="scan-keyword" name="keyword" required placeholder="Network+" class="form-control">
             <span class="hint">Saves jobs that mention this in the title or description.</span>
+            <button type="button" class="btn btn-outline-secondary" data-suggest-keyword data-url="{{ url_for('suggest_keyword') }}">Suggest from resume</button>
           </label>
           <label>How strict should keyword matching be?
             <select name="kw_match" class="form-select">
@@ -711,6 +715,26 @@
     }
   }
   setTimeout(poll, 2000);
+  {% endif %}
+  {% if scores_pending %}
+  (function pollScores() {
+    fetch("{{ url_for('jobs_heat_status') }}", {headers: {Accept: "application/json"}})
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (data.pending) {
+          setTimeout(pollScores, 3000);
+          return;
+        }
+        var el = document.activeElement;
+        var typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT");
+        if (typing) {
+          setTimeout(pollScores, 3000);
+          return;
+        }
+        location.reload();
+      })
+      .catch(function () { setTimeout(pollScores, 5000); });
+  })();
   {% endif %}
 </script>
 {% endblock %}
