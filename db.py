@@ -9,6 +9,13 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from resume import (
+    ResumeProfile,
+    extract_resume_text,
+    heat_tier,
+    parse_resume,
+    score_job_resume,
+)
 from textutil import (
     CERT_STACK,
     CLEARANCE_LABELS,
@@ -32,69 +39,172 @@ from years import parse_years, years_chips
 
 DB_PATH = Path(__file__).resolve().parent / "jobscraper.db"
 
-DEFAULT_LOCATIONS = [
-    "United States",
-    "Remote",
-    "New York, NY",
-    "Los Angeles, CA",
-    "Chicago, IL",
-    "Houston, TX",
-    "Phoenix, AZ",
-    "Philadelphia, PA",
-    "San Antonio, TX",
-    "San Diego, CA",
-    "Dallas, TX",
-    "San Jose, CA",
-    "Austin, TX",
-    "Jacksonville, FL",
-    "Fort Worth, TX",
-    "Columbus, OH",
-    "Charlotte, NC",
-    "Indianapolis, IN",
-    "San Francisco, CA",
-    "Seattle, WA",
-    "Denver, CO",
-    "Washington, DC",
-    "Boston, MA",
-    "El Paso, TX",
-    "Nashville, TN",
-    "Detroit, MI",
-    "Oklahoma City, OK",
-    "Portland, OR",
-    "Las Vegas, NV",
-    "Memphis, TN",
-    "Louisville, KY",
-    "Baltimore, MD",
-    "Milwaukee, WI",
-    "Albuquerque, NM",
-    "Tucson, AZ",
-    "Fresno, CA",
-    "Sacramento, CA",
-    "Mesa, AZ",
-    "Kansas City, MO",
-    "Atlanta, GA",
-    "Miami, FL",
-    "Raleigh, NC",
-    "Omaha, NE",
-    "Colorado Springs, CO",
-    "Minneapolis, MN",
-    "Tampa, FL",
-    "New Orleans, LA",
-    "Cleveland, OH",
-    "Orlando, FL",
-    "Salt Lake City, UT",
-    "Pittsburgh, PA",
-    "Cincinnati, OH",
-    "St. Louis, MO",
-    "Riverside, CA",
-    "Richmond, VA",
-    "Buffalo, NY",
-    "Birmingham, AL",
-    "Boise, ID",
-    "Des Moines, IA",
-    "Anchorage, AK",
-    "Honolulu, HI",
+NATIONWIDE_LOCATIONS: tuple[str, ...] = ("United States", "Remote")
+
+REGION_ORDER: tuple[str, ...] = (
+    "southwest",
+    "northwest",
+    "midwest",
+    "southeast",
+    "northeast",
+)
+
+REGION_LABELS: dict[str, str] = {
+    "southwest": "Southwest",
+    "northwest": "Northwest",
+    "midwest": "Midwest",
+    "southeast": "Southeast",
+    "northeast": "Northeast",
+}
+
+REGION_STATES: dict[str, tuple[tuple[str, str], ...]] = {
+    "southwest": (
+        ("Arizona", "AZ"),
+        ("California", "CA"),
+        ("Colorado", "CO"),
+        ("Hawaii", "HI"),
+        ("Nevada", "NV"),
+        ("New Mexico", "NM"),
+        ("Oklahoma", "OK"),
+        ("Texas", "TX"),
+        ("Utah", "UT"),
+    ),
+    "northwest": (
+        ("Alaska", "AK"),
+        ("Idaho", "ID"),
+        ("Montana", "MT"),
+        ("Oregon", "OR"),
+        ("Washington", "WA"),
+        ("Wyoming", "WY"),
+    ),
+    "midwest": (
+        ("Illinois", "IL"),
+        ("Indiana", "IN"),
+        ("Iowa", "IA"),
+        ("Kansas", "KS"),
+        ("Michigan", "MI"),
+        ("Minnesota", "MN"),
+        ("Missouri", "MO"),
+        ("Nebraska", "NE"),
+        ("North Dakota", "ND"),
+        ("Ohio", "OH"),
+        ("South Dakota", "SD"),
+        ("Wisconsin", "WI"),
+    ),
+    "southeast": (
+        ("Alabama", "AL"),
+        ("Arkansas", "AR"),
+        ("Florida", "FL"),
+        ("Georgia", "GA"),
+        ("Kentucky", "KY"),
+        ("Louisiana", "LA"),
+        ("Mississippi", "MS"),
+        ("North Carolina", "NC"),
+        ("South Carolina", "SC"),
+        ("Tennessee", "TN"),
+        ("Virginia", "VA"),
+        ("West Virginia", "WV"),
+    ),
+    "northeast": (
+        ("Connecticut", "CT"),
+        ("Delaware", "DE"),
+        ("Maine", "ME"),
+        ("Maryland", "MD"),
+        ("Massachusetts", "MA"),
+        ("New Hampshire", "NH"),
+        ("New Jersey", "NJ"),
+        ("New York", "NY"),
+        ("Pennsylvania", "PA"),
+        ("Rhode Island", "RI"),
+        ("Vermont", "VT"),
+        ("Washington, DC", "DC"),
+    ),
+}
+
+STATE_ABBR_TO_NAME: dict[str, str] = {
+    abbr: name
+    for states in REGION_STATES.values()
+    for name, abbr in states
+}
+STATE_NAME_TO_ABBR: dict[str, str] = {
+    name.lower(): abbr
+    for states in REGION_STATES.values()
+    for name, abbr in states
+}
+STATE_NAME_TO_REGION: dict[str, str] = {
+    name.lower(): region
+    for region, states in REGION_STATES.items()
+    for name, _abbr in states
+}
+
+DEFAULT_LOCATIONS: list[str] = [
+    *NATIONWIDE_LOCATIONS,
+    *(name for region in REGION_ORDER for name, _abbr in REGION_STATES[region]),
 ]
+
+LEGACY_DEFAULT_CITIES: frozenset[str] = frozenset(
+    name.lower()
+    for name in (
+        "New York, NY",
+        "Los Angeles, CA",
+        "Chicago, IL",
+        "Houston, TX",
+        "Phoenix, AZ",
+        "Philadelphia, PA",
+        "San Antonio, TX",
+        "San Diego, CA",
+        "Dallas, TX",
+        "San Jose, CA",
+        "Austin, TX",
+        "Jacksonville, FL",
+        "Fort Worth, TX",
+        "Columbus, OH",
+        "Charlotte, NC",
+        "Indianapolis, IN",
+        "San Francisco, CA",
+        "Seattle, WA",
+        "Denver, CO",
+        "Boston, MA",
+        "El Paso, TX",
+        "Nashville, TN",
+        "Detroit, MI",
+        "Oklahoma City, OK",
+        "Portland, OR",
+        "Las Vegas, NV",
+        "Memphis, TN",
+        "Louisville, KY",
+        "Baltimore, MD",
+        "Milwaukee, WI",
+        "Albuquerque, NM",
+        "Tucson, AZ",
+        "Fresno, CA",
+        "Sacramento, CA",
+        "Mesa, AZ",
+        "Kansas City, MO",
+        "Atlanta, GA",
+        "Miami, FL",
+        "Raleigh, NC",
+        "Omaha, NE",
+        "Colorado Springs, CO",
+        "Minneapolis, MN",
+        "Tampa, FL",
+        "New Orleans, LA",
+        "Cleveland, OH",
+        "Orlando, FL",
+        "Salt Lake City, UT",
+        "Pittsburgh, PA",
+        "Cincinnati, OH",
+        "St. Louis, MO",
+        "Riverside, CA",
+        "Richmond, VA",
+        "Buffalo, NY",
+        "Birmingham, AL",
+        "Boise, ID",
+        "Des Moines, IA",
+        "Anchorage, AK",
+        "Honolulu, HI",
+    )
+)
 
 STATUSES = (
     "new",
@@ -150,9 +260,12 @@ JOB_TRACKER_COLS = (
 )
 _INIT_PATHS: set[str] = set()
 _INSIGHTS_CACHE: dict[str, dict[str, Any]] = {}
+_RESUME_PROFILE_CACHE: dict[str, ResumeProfile] = {}
 REPAIR_VERSION = 2
 # Bump when the years parser or text enrichment changes; init_db re-runs it once.
 ENRICH_VERSION = 5
+# Bump when default locations migrate from cities to states organized by region.
+LOCATIONS_STATE_VERSION = 6
 
 # Where a stored pay figure came from. "direct_data" is what every job saved before
 # the split was marked with; it can be either of the other two until it is seen again.
@@ -200,6 +313,7 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 def _invalidate_caches() -> None:
     _INSIGHTS_CACHE.clear()
+    _RESUME_PROFILE_CACHE.clear()
 
 
 LOCAL_EXTERNAL_ID = "local-owner"
@@ -326,8 +440,11 @@ def init_db(db_path: Path | None = None) -> Path:
             _repair_stored_jobs(conn)
         if version < ENRICH_VERSION:
             _backfill_enrichment(conn)
-        if version < max(REPAIR_VERSION, ENRICH_VERSION):
-            conn.execute(f"PRAGMA user_version = {max(REPAIR_VERSION, ENRICH_VERSION)}")
+        if version < LOCATIONS_STATE_VERSION:
+            _migrate_locations_to_states(conn)
+        target_version = max(REPAIR_VERSION, ENRICH_VERSION, LOCATIONS_STATE_VERSION)
+        if version < target_version:
+            conn.execute(f"PRAGMA user_version = {target_version}")
             conn.commit()
             _invalidate_caches()
         _INIT_PATHS.add(key)
@@ -349,6 +466,9 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     kw_cols = {row[1] for row in conn.execute("PRAGMA table_info(job_keywords)")}
     if "stance" not in kw_cols:
         conn.execute("ALTER TABLE job_keywords ADD COLUMN stance TEXT")
+    mat_cols = {row[1] for row in conn.execute("PRAGMA table_info(materials)")}
+    if "extracted_text" not in mat_cols:
+        conn.execute("ALTER TABLE materials ADD COLUMN extracted_text TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_years_min ON jobs(years_min)")
     conn.execute(
         """
@@ -377,6 +497,21 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_filter_templates_kind ON filter_templates(kind)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS job_heat_scores (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            resume_sig TEXT NOT NULL,
+            score REAL NOT NULL,
+            tier TEXT NOT NULL,
+            tooltip TEXT,
+            details_json TEXT,
+            PRIMARY KEY (user_id, job_id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_heat_sig ON job_heat_scores(user_id, resume_sig)")
 
 
 def _table_cols(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -755,6 +890,75 @@ def _repair_stored_jobs(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM jobs WHERE id NOT IN (SELECT job_id FROM job_keywords)")
 
 
+def _migrate_locations_to_states(conn: sqlite3.Connection) -> None:
+    """Replace legacy default city rows with US states organized by region.
+
+    Preserves 'United States', 'Remote', any custom locations the user added, and
+    which states were enabled based on their previously enabled legacy cities.
+    """
+    users = [row[0] for row in conn.execute("SELECT id FROM users").fetchall()]
+    for uid in users:
+        rows = conn.execute(
+            "SELECT id, name, enabled FROM locations WHERE user_id = ?",
+            (uid,),
+        ).fetchall()
+        if not rows:
+            continue
+        by_lower = {r["name"].strip().lower(): dict(r) for r in rows}
+        legacy_rows = [r for key, r in by_lower.items() if key in LEGACY_DEFAULT_CITIES]
+        if not legacy_rows:
+            # Ensure any missing default states are present without touching existing choices.
+            for idx, name in enumerate(DEFAULT_LOCATIONS):
+                if name.lower() not in by_lower:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO locations (user_id, name, enabled, sort_order) VALUES (?, ?, 1, ?)",
+                        (uid, name, idx),
+                    )
+            continue
+
+        enabled_abbrs: set[str] = set()
+        for r in legacy_rows:
+            if r["enabled"]:
+                parts = r["name"].rsplit(",", 1)
+                if len(parts) == 2:
+                    enabled_abbrs.add(parts[1].strip().upper())
+        all_legacy_on = all(bool(r["enabled"]) for r in legacy_rows)
+
+        legacy_ids = [r["id"] for r in legacy_rows]
+        placeholders = ",".join("?" * len(legacy_ids))
+        conn.execute(f"DELETE FROM locations WHERE id IN ({placeholders})", legacy_ids)
+
+        for idx, name in enumerate(DEFAULT_LOCATIONS):
+            key = name.lower()
+            existing = by_lower.get(key)
+            if existing is not None:
+                conn.execute(
+                    "UPDATE locations SET sort_order = ? WHERE id = ?",
+                    (idx, existing["id"]),
+                )
+                continue
+            if name in NATIONWIDE_LOCATIONS:
+                is_on = 1
+            else:
+                abbr = STATE_NAME_TO_ABBR.get(key, "")
+                is_on = 1 if (all_legacy_on or abbr in enabled_abbrs) else 0
+            conn.execute(
+                "INSERT OR IGNORE INTO locations (user_id, name, enabled, sort_order) VALUES (?, ?, ?, ?)",
+                (uid, name, is_on, idx),
+            )
+
+        # Keep custom user-added locations after default states
+        default_keys = {n.lower() for n in DEFAULT_LOCATIONS}
+        custom_order = len(DEFAULT_LOCATIONS)
+        for key, r in by_lower.items():
+            if key not in LEGACY_DEFAULT_CITIES and key not in default_keys:
+                conn.execute(
+                    "UPDATE locations SET sort_order = ? WHERE id = ?",
+                    (custom_order, r["id"]),
+                )
+                custom_order += 1
+
+
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -791,6 +995,81 @@ def get_all_locations(user_id: int, db_path: Path | None = None) -> list[dict[st
             (user_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_grouped_locations(user_id: int, db_path: Path | None = None) -> dict[str, Any]:
+    """Locations grouped into nationwide, the 5 US regions (states), and custom."""
+    locs = get_all_locations(user_id, db_path)
+    by_lower = {loc["name"].strip().lower(): loc for loc in locs}
+    seen_ids: set[int] = set()
+
+    nationwide: list[dict[str, Any]] = []
+    for name in NATIONWIDE_LOCATIONS:
+        row = by_lower.get(name.lower())
+        if row:
+            nationwide.append(row)
+            seen_ids.add(row["id"])
+
+    regions: list[dict[str, Any]] = []
+    for key in REGION_ORDER:
+        items: list[dict[str, Any]] = []
+        for state_name, abbr in REGION_STATES[key]:
+            row = by_lower.get(state_name.lower())
+            if row:
+                items.append({**row, "abbr": abbr})
+                seen_ids.add(row["id"])
+        en = sum(1 for item in items if item["enabled"])
+        regions.append(
+            {
+                "key": key,
+                "label": REGION_LABELS[key],
+                "locations": items,
+                "enabled_count": en,
+                "total_count": len(items),
+                "all_enabled": bool(items) and en == len(items),
+            }
+        )
+
+    custom = [loc for loc in locs if loc["id"] not in seen_ids]
+    enabled_total = sum(1 for loc in locs if loc["enabled"])
+    return {
+        "nationwide": nationwide,
+        "regions": regions,
+        "custom": custom,
+        "enabled_count": enabled_total,
+        "total_count": len(locs),
+    }
+
+
+def set_region_locations_enabled(
+    user_id: int,
+    region_key: str,
+    enabled: bool,
+    db_path: Path | None = None,
+) -> None:
+    states = REGION_STATES.get((region_key or "").strip().lower())
+    if not states:
+        raise ValueError(f"Unknown region: {region_key}")
+    init_db(db_path)
+    names = [name for name, _abbr in states]
+    with connect(db_path) as conn:
+        conn.executemany(
+            "UPDATE locations SET enabled = ? WHERE user_id = ? AND name = ? COLLATE NOCASE",
+            [(1 if enabled else 0, user_id, name) for name in names],
+        )
+        conn.commit()
+
+
+def delete_location(user_id: int, loc_id: int, db_path: Path | None = None) -> None:
+    init_db(db_path)
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "DELETE FROM locations WHERE id = ? AND user_id = ?",
+            (loc_id, user_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise ValueError(f"Location id not found: {loc_id}")
 
 
 def add_location(user_id: int, name: str, db_path: Path | None = None) -> None:
@@ -1461,6 +1740,164 @@ def _material_row(conn: sqlite3.Connection, user_id: int, material_id: Any) -> d
     return dict(row) if row else None
 
 
+def _resolve_material_path(stored: str | None) -> Path | None:
+    if not stored:
+        return None
+    path = Path(stored)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
+    return path if path.is_file() else None
+
+
+def _material_text(mat: dict[str, Any], *, persist: bool = False, db_path: Path | None = None) -> str:
+    """Best available plain text for a materials row (paste, cached extract, or file)."""
+    cached = (mat.get("extracted_text") or "").strip()
+    if cached:
+        return cached
+    body = (mat.get("body") or "").strip()
+    if body:
+        return body
+    path = _resolve_material_path(mat.get("path"))
+    if path is None:
+        return ""
+    text = extract_resume_text(path).strip()
+    if text and persist and mat.get("id") is not None:
+        with connect(db_path) as conn:
+            conn.execute(
+                "UPDATE materials SET extracted_text = ? WHERE id = ?",
+                (text, mat["id"]),
+            )
+            conn.commit()
+        mat["extracted_text"] = text
+    return text
+
+
+def get_user_resume_profile(
+    user_id: int,
+    profile: dict[str, Any] | None = None,
+    db_path: Path | None = None,
+) -> ResumeProfile | None:
+    """Parse the user's default (or newest) resume into a ResumeProfile for Heat Score."""
+    init_db(db_path)
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM materials
+            WHERE user_id = ? AND kind = 'resume'
+            ORDER BY is_default DESC, created_at DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    mat = dict(row)
+    text = _material_text(mat, persist=True, db_path=db_path)
+    if not text:
+        return None
+    if profile is None:
+        profile = get_profile(user_id, db_path)
+    # parse_resume builds a content signature from text + profile supplements.
+    probe = parse_resume(text, profile)
+    cached = _RESUME_PROFILE_CACHE.get(probe.signature)
+    if cached is not None:
+        return cached
+    _RESUME_PROFILE_CACHE[probe.signature] = probe
+    return probe
+
+
+def _ensure_job_descriptions(
+    rows: list[dict[str, Any]],
+    db_path: Path | None = None,
+) -> None:
+    missing = [row["id"] for row in rows if "description" not in row]
+    if not missing:
+        return
+    placeholders = ",".join("?" * len(missing))
+    with connect(db_path) as conn:
+        desc_rows = conn.execute(
+            f"SELECT id, description FROM jobs WHERE id IN ({placeholders})",
+            missing,
+        ).fetchall()
+    by_id = {r["id"]: (r["description"] or "") for r in desc_rows}
+    for row in rows:
+        if "description" not in row:
+            row["description"] = by_id.get(row["id"], "")
+
+
+def _apply_resume_heat_scores(
+    user_id: int,
+    rows: list[dict[str, Any]],
+    resume: ResumeProfile,
+    keyword: str = "",
+    db_path: Path | None = None,
+) -> None:
+    """Attach resume Heat Score to each row, using job_heat_scores as a cache."""
+    if not rows:
+        return
+    ids = [row["id"] for row in rows]
+    placeholders = ",".join("?" * len(ids))
+    with connect(db_path) as conn:
+        cached_rows = conn.execute(
+            f"""
+            SELECT job_id, resume_sig, score, tier, tooltip
+            FROM job_heat_scores
+            WHERE user_id = ? AND job_id IN ({placeholders})
+            """,
+            [user_id, *ids],
+        ).fetchall()
+    cached = {r["job_id"]: dict(r) for r in cached_rows}
+
+    need: list[dict[str, Any]] = []
+    for row in rows:
+        hit = cached.get(row["id"])
+        if hit and hit.get("resume_sig") == resume.signature:
+            row["score"] = float(hit["score"])
+            row["score_tip"] = hit.get("tooltip") or ""
+            row["heat_tier"] = hit.get("tier") or heat_tier(float(hit["score"]))
+        else:
+            need.append(row)
+
+    if not need:
+        return
+
+    _ensure_job_descriptions(need, db_path)
+    upserts: list[tuple[Any, ...]] = []
+    for row in need:
+        result = score_job_resume(row, resume, keyword)
+        row["score"] = result["score"]
+        row["score_tip"] = result["tooltip"]
+        row["heat_tier"] = result["tier"]
+        upserts.append(
+            (
+                user_id,
+                row["id"],
+                resume.signature,
+                result["score"],
+                result["tier"],
+                result["tooltip"],
+                json.dumps(result.get("details") or {}, ensure_ascii=False),
+            )
+        )
+
+    with connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO job_heat_scores
+                (user_id, job_id, resume_sig, score, tier, tooltip, details_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, job_id) DO UPDATE SET
+                resume_sig = excluded.resume_sig,
+                score = excluded.score,
+                tier = excluded.tier,
+                tooltip = excluded.tooltip,
+                details_json = excluded.details_json
+            """,
+            upserts,
+        )
+        conn.commit()
+
+
 def _job_filters_sql(user_id: int, filters: dict[str, Any]) -> tuple[str, list[Any]]:
     """WHERE clause for the list. Expects FROM jobs j JOIN user_jobs uj ... (aliases j, uj)."""
     clauses: list[str] = ["1=1"]
@@ -1674,9 +2111,20 @@ def query_jobs(
             kept.append(row)
         rows = kept
     today = date.today().isoformat()
+    resume = get_user_resume_profile(user_id, profile if isinstance(profile, dict) else None, db_path)
+    if resume is not None:
+        _apply_resume_heat_scores(user_id, rows, resume, keyword, db_path)
     for row in rows:
-        row["score"], parts = score_job(row, keyword, profile)
-        row["score_tip"] = score_tooltip(parts)
+        if resume is None:
+            row["score"], parts = score_job(row, keyword, profile)
+            tip = score_tooltip(parts)
+            row["score_tip"] = (
+                "No resume uploaded — using profile fit score.\n"
+                "Upload a default resume for a Heat Score based on degree, "
+                "languages, certifications, skills, and experience.\n"
+                + tip
+            )
+            row["heat_tier"] = heat_tier(float(row["score"] or 0))
         row["pay_label"] = format_pay(row)
         row["pay_estimated"] = row.get("salary_source") == "estimate"
         row["pay_hint"] = pay_hint(row)
@@ -2359,6 +2807,11 @@ def add_material(
     body = _blank(body)
     if not path and not body:
         raise ValueError("Upload a file or paste the text")
+    extracted: str | None = body
+    if not extracted and path:
+        resolved = _resolve_material_path(path)
+        if resolved is not None:
+            extracted = extract_resume_text(resolved).strip() or None
     init_db(db_path)
     MATERIALS_DIR.mkdir(parents=True, exist_ok=True)
     with connect(db_path) as conn:
@@ -2375,13 +2828,27 @@ def add_material(
             is_default = existing == 0
         cur = conn.execute(
             """
-            INSERT INTO materials (user_id, kind, name, filename, path, body, created_at, is_default)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO materials
+                (user_id, kind, name, filename, path, body, created_at, is_default, extracted_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (user_id, kind, name, filename, path, body, utc_now(), 1 if is_default else 0),
+            (
+                user_id,
+                kind,
+                name,
+                filename,
+                path,
+                body,
+                utc_now(),
+                1 if is_default else 0,
+                extracted,
+            ),
         )
         conn.commit()
-        return int(cur.lastrowid)
+        material_id = int(cur.lastrowid)
+    if kind == "resume":
+        _RESUME_PROFILE_CACHE.clear()
+    return material_id
 
 
 def set_default_material(user_id: int, material_id: int, db_path: Path | None = None) -> None:
@@ -2402,6 +2869,8 @@ def set_default_material(user_id: int, material_id: int, db_path: Path | None = 
             (material_id, user_id),
         )
         conn.commit()
+    if row["kind"] == "resume":
+        _RESUME_PROFILE_CACHE.clear()
 
 
 def delete_material(user_id: int, material_id: int, db_path: Path | None = None) -> None:
@@ -2423,13 +2892,12 @@ def delete_material(user_id: int, material_id: int, db_path: Path | None = None)
         )
         conn.execute("DELETE FROM materials WHERE id = ? AND user_id = ?", (material_id, user_id))
         conn.commit()
+    if row["kind"] == "resume":
+        _RESUME_PROFILE_CACHE.clear()
     stored = row["path"]
-    if stored:
-        path = Path(stored)
-        if not path.is_absolute():
-            path = Path(__file__).resolve().parent / path
-        if path.exists() and path.is_file():
-            path.unlink()
+    path = _resolve_material_path(stored)
+    if path is not None:
+        path.unlink()
 
 
 FILTER_TEMPLATE_KINDS = ("title_include", "title_exclude", "exclude")

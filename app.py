@@ -39,8 +39,8 @@ from db import (
     delete_run,
     ensure_user,
     format_pay,
-    get_all_locations,
     get_enabled_locations,
+    get_grouped_locations,
     get_insights,
     get_job,
     get_latest_run,
@@ -56,6 +56,7 @@ from db import (
     set_default_material,
     save_filter_template,
     set_location_enabled_by_id,
+    set_region_locations_enabled,
     templates_by_kind,
     tracker_summary,
     update_job_tracker,
@@ -660,11 +661,11 @@ def jobs():
         active_filters=active_filters,
         state=state,
         scan_open=scan_open,
-        locations=get_all_locations(_uid()),
+        grouped=get_grouped_locations(_uid()),
         enabled_count=len(get_enabled_locations(_uid())),
         templates=templates_by_kind(_uid()),
         sort_options=[
-            ("score", "Score"),
+            ("score", "Heat"),
             ("date", "Date posted"),
             ("pay", "Pay"),
             ("company", "Company"),
@@ -763,12 +764,11 @@ def _cities_fetch() -> bool:
 
 
 def _cities_panel():
-    locations = get_all_locations(_uid())
-    enabled = get_enabled_locations(_uid())
+    grouped = get_grouped_locations(_uid())
     return render_template(
         "_cities_panel.html",
-        locations=locations,
-        enabled_count=len(enabled),
+        grouped=grouped,
+        enabled_count=grouped["enabled_count"],
     )
 
 
@@ -795,7 +795,7 @@ def toggle_city(loc_id: int):
 def add_city():
     name = (request.form.get("name") or "").strip()
     if not name:
-        message = "Enter a city name, e.g. Tulsa, OK"
+        message = "Enter a location, e.g. Tulsa, OK"
         if _cities_fetch():
             return message, 400
         flash(message)
@@ -813,10 +813,10 @@ def bulk_cities():
     action = request.form.get("bulk") or request.form.get("action")
     if action == "enable_all":
         set_all_locations_enabled(_uid(), True)
-        message = "All cities enabled."
+        message = "All locations enabled."
     elif action == "disable_all":
         set_all_locations_enabled(_uid(), False)
-        message = "All cities disabled."
+        message = "All locations disabled."
     elif action == "core_only":
         set_all_locations_enabled(_uid(), False, except_names=["United States", "Remote"])
         message = "Only United States + Remote enabled."
@@ -826,6 +826,20 @@ def bulk_cities():
         return _cities_panel()
     if message:
         flash(message)
+    return _scan_redirect()
+
+
+@app.post("/cities/region/<region_key>")
+def toggle_region(region_key: str):
+    enabled = request.form.get("enabled") == "1"
+    try:
+        set_region_locations_enabled(_uid(), region_key, enabled)
+    except ValueError as exc:
+        if _cities_fetch():
+            return str(exc), 400
+        flash(str(exc))
+    if _cities_fetch():
+        return _cities_panel()
     return _scan_redirect()
 
 
@@ -877,7 +891,7 @@ def scrape_page():
         )
         locations = get_enabled_locations(_uid())
         if not locations:
-            flash("Enable at least one city first.", "error")
+            flash("Enable at least one location first.", "error")
             return redirect(url_for("jobs", scan=1))
 
         try:

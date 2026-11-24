@@ -14,7 +14,7 @@
     <span{% if job.pay_hint %} title="{{ job.pay_hint }}"{% endif %}>{{ job.pay_label if job.pay_label != "—" else "Pay n/a" }}{% if job.pay_estimated %} <em class="est">est.</em>{% endif %}</span>
     <span>{{ job.date_posted or "—" }}</span>
     {% if job.company_rating %}<span title="Company rating{% if job.company_reviews_count %}, {{ job.company_reviews_count }} reviews{% endif %}">★ {{ '%.1f' % job.company_rating }}</span>{% endif %}
-    <span class="n score" title="{{ job.score_tip }}">{{ job.score | round(0) | int }}</span>
+    <span class="n score heat-{{ job.heat_tier or 'cool' }}" title="{{ job.score_tip }}">{{ job.score | round(0) | int }}</span>
   </div>
   <div class="chips">
     {% for chip in job.years_chips %}

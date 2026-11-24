@@ -1,6 +1,13 @@
-<div class="cities-panel" id="scan-cities">
+{% set region_short = {
+  'southwest': 'SW',
+  'northwest': 'NW',
+  'midwest': 'MW',
+  'southeast': 'SE',
+  'northeast': 'NE'
+} %}
+<div class="cities-panel locations-panel" id="scan-cities" data-active-region="{{ grouped.regions[0].key if grouped.regions else '' }}">
   <div class="page-head">
-    <p class="muted">{{ enabled_count }} cities on. Only enabled cities are searched.</p>
+    <p class="muted">{{ grouped.enabled_count }} location{{ 's' if grouped.enabled_count != 1 else '' }} on. Only enabled locations are searched.</p>
     <form class="inline" method="post" action="{{ url_for('bulk_cities') }}">
       <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}#scan-cities">
       <button name="bulk" value="enable_all" class="btn btn-primary">All</button>
@@ -8,18 +15,82 @@
       <button class="btn btn-outline-secondary" name="bulk" value="core_only">US + Remote</button>
     </form>
   </div>
-  <form class="inline" method="post" action="{{ url_for('add_city') }}">
-    <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}#scan-cities">
-    <input type="text" name="name" placeholder="Tulsa, OK" required class="form-control">
-    <button type="submit" class="btn btn-primary">Add city</button>
-  </form>
-  <div class="city-grid">
-    {% for loc in locations %}
-    <form method="post" action="{{ url_for('toggle_city', loc_id=loc.id) }}">
-      <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}#scan-cities">
-      <input type="hidden" name="enabled" value="{{ 0 if loc.enabled else 1 }}">
-      <button type="submit" class="toggle {% if loc.enabled %}on{% endif %} btn btn-outline-secondary" data-city-id="{{ loc.id }}">{{ loc.name }}</button>
-    </form>
-    {% endfor %}
+
+  <div class="loc-group loc-scope">
+    <div class="loc-group-head">
+      <h4>Nationwide &amp; regions</h4>
+    </div>
+    <div class="city-grid loc-grid loc-scope-row">
+      {% for loc in grouped.nationwide %}
+      <form method="post" action="{{ url_for('toggle_city', loc_id=loc.id) }}">
+        <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}#scan-cities">
+        <input type="hidden" name="enabled" value="{{ 0 if loc.enabled else 1 }}">
+        <button type="submit" class="toggle {% if loc.enabled %}on{% endif %} btn btn-outline-secondary" data-loc-id="{{ loc.id }}">{{ loc.name }}</button>
+      </form>
+      {% endfor %}
+      {% if grouped.nationwide and grouped.regions %}
+      <span class="loc-scope-sep" aria-hidden="true"></span>
+      {% endif %}
+      {% for region in grouped.regions %}
+      <button
+        type="button"
+        class="region-tab btn btn-outline-secondary"
+        data-region-pick="{{ region.key }}"
+        title="{{ region.label }} · {{ region.enabled_count }}/{{ region.total_count }} on"
+        aria-pressed="false"
+      >
+        <span class="region-tab-label">{{ region_short.get(region.key, region.label) }}</span>
+        <span class="region-tab-count {% if region.enabled_count %}has-on{% endif %}">{{ region.enabled_count }}/{{ region.total_count }}</span>
+      </button>
+      {% endfor %}
+    </div>
   </div>
+
+  {% for region in grouped.regions %}
+  <div class="loc-group loc-states" data-region-panel="{{ region.key }}" {% if not loop.first %}hidden{% endif %}>
+    <div class="loc-group-head">
+      <h4>{{ region.label }}</h4>
+      <span class="muted loc-count">{{ region.enabled_count }}/{{ region.total_count }}</span>
+      <form class="inline loc-region-toggle" method="post" action="{{ url_for('toggle_region', region_key=region.key) }}">
+        <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}#scan-cities">
+        <input type="hidden" name="enabled" value="{{ 0 if region.all_enabled else 1 }}">
+        <button type="submit" class="btn btn-outline-secondary btn-sm" data-region-key="{{ region.key }}">
+          {{ "Clear region" if region.all_enabled else "All in region" }}
+        </button>
+      </form>
+    </div>
+    <div class="city-grid loc-grid">
+      {% for loc in region.locations %}
+      <form method="post" action="{{ url_for('toggle_city', loc_id=loc.id) }}">
+        <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}#scan-cities">
+        <input type="hidden" name="enabled" value="{{ 0 if loc.enabled else 1 }}">
+        <button type="submit" class="toggle {% if loc.enabled %}on{% endif %} btn btn-outline-secondary" data-loc-id="{{ loc.id }}" title="{{ loc.name }}">{{ loc.abbr or loc.name }}</button>
+      </form>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+
+  {% if grouped.custom %}
+  <div class="loc-group">
+    <div class="loc-group-head">
+      <h4>Custom</h4>
+    </div>
+    <div class="city-grid loc-grid">
+      {% for loc in grouped.custom %}
+      <form method="post" action="{{ url_for('toggle_city', loc_id=loc.id) }}">
+        <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}#scan-cities">
+        <input type="hidden" name="enabled" value="{{ 0 if loc.enabled else 1 }}">
+        <button type="submit" class="toggle {% if loc.enabled %}on{% endif %} btn btn-outline-secondary" data-loc-id="{{ loc.id }}">{{ loc.name }}</button>
+      </form>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <form class="inline loc-add" method="post" action="{{ url_for('add_city') }}">
+    <input type="hidden" name="next" value="{{ url_for('jobs', scan=1) }}#scan-cities">
+    <input type="text" name="name" placeholder="Add custom location (e.g. Tulsa, OK)" required class="form-control">
+    <button type="submit" class="btn btn-primary">Add</button>
+  </form>
 </div>

@@ -752,6 +752,109 @@ button.btn.toggle.on:is(:hover, :focus, :active) {
   font-size: 0.82rem;
 }
 
+.locations-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  overflow: visible;
+}
+.locations-panel > .page-head {
+  padding-bottom: 0.1rem;
+}
+.loc-group {
+  margin: 0;
+  padding: 0.55rem 0.65rem 0.7rem;
+  border: 1px solid var(--app-line);
+  border-radius: var(--pico-border-radius);
+  background: color-mix(in srgb, var(--app-primary) 4%, #fff);
+}
+.loc-group-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+.loc-group-head h4 {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--pico-muted-color);
+}
+.loc-group-head .loc-count {
+  font-size: 0.75rem;
+  margin-right: auto;
+}
+.loc-group-head .loc-region-toggle {
+  margin: 0;
+}
+.loc-group-head .btn-sm {
+  --pico-form-element-spacing-vertical: 0.18rem;
+  --pico-form-element-spacing-horizontal: 0.55rem;
+  font-size: 0.72rem;
+}
+.locations-panel .loc-grid {
+  max-height: none;
+  overflow: visible;
+  margin-top: 0.15rem;
+}
+.locations-panel .loc-grid button {
+  min-width: 2.6rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+.loc-scope-row {
+  align-items: center;
+}
+.loc-scope-sep {
+  display: inline-block;
+  width: 1px;
+  height: 1.55rem;
+  margin: 0 0.15rem;
+  background: var(--app-line);
+  flex: 0 0 auto;
+}
+button.region-tab {
+  --pico-form-element-spacing-vertical: 0.28rem;
+  --pico-form-element-spacing-horizontal: 0.55rem;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-width: 0;
+  font-size: 0.82rem;
+}
+button.region-tab .region-tab-label {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+button.region-tab .region-tab-count {
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--pico-muted-color);
+}
+button.region-tab .region-tab-count.has-on {
+  color: inherit;
+}
+button.region-tab.is-active,
+button.region-tab.is-active:is(:hover, :focus, :active) {
+  background: color-mix(in srgb, var(--pico-primary) 16%, #fff);
+  border-color: var(--pico-primary-border);
+  color: var(--pico-color);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pico-primary) 35%, transparent);
+}
+button.region-tab.is-active .region-tab-count {
+  color: var(--pico-muted-color);
+}
+.loc-states[hidden] {
+  display: none !important;
+}
+.locations-panel .loc-add {
+  margin: 0.05rem 0 0;
+}
+
 .meta { display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; color: var(--pico-muted-color); margin-bottom: 0.8rem; }
 .facts {
   display: grid;
@@ -1210,7 +1313,11 @@ a.job-row.on {
   font-size: 0.8rem;
 }
 .job-row-meta .n { font-variant-numeric: tabular-nums; }
-.job-row-meta .score { margin-left: auto; cursor: help; }
+.job-row-meta .score { margin-left: auto; cursor: help; font-weight: 700; }
+.job-row-meta .score.heat-hot { color: #c2410c; }
+.job-row-meta .score.heat-warm { color: #b45309; }
+.job-row-meta .score.heat-mild { color: #64748b; }
+.job-row-meta .score.heat-cool { color: var(--pico-muted-color); }
 .jobs-pane { padding: 1rem 1.15rem 2rem; background: #fff; }
 .jobs-pane h2 { font-size: 1.4rem; margin-bottom: 0.15rem; }
 .jobs-pane.pane-swap { animation: pane-in .28s ease; }

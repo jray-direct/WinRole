@@ -33,9 +33,9 @@
       <p>This may take a minute or two...</p>
     </div>
     <div class="scan-setup" {% if state.running %}hidden{% endif %}>
-    <p class="muted">Turn on at least one city, then set the keyword. Only jobs that pass the filters are saved.</p>
+    <p class="muted">Turn on at least one location, then set the keyword. Only jobs that pass the filters are saved.</p>
     <div class="scan-section">
-      <h3>Cities</h3>
+      <h3>Locations</h3>
       {% include "_cities_panel.html" %}
     </div>
     <form method="post" action="{{ url_for('scrape_page') }}" class="scrape-form compact-filters">
@@ -491,7 +491,9 @@
           body.append(event.submitter.name, event.submitter.value);
         }
         const y = backdrop.scrollTop;
-        const cityId = event.submitter && event.submitter.getAttribute("data-city-id");
+        const locId = event.submitter && event.submitter.getAttribute("data-loc-id");
+        const regionKey = event.submitter && event.submitter.getAttribute("data-region-key");
+        const activeRegion = panel.getAttribute("data-active-region") || "";
         panel.querySelectorAll("button").forEach(function (btn) { btn.disabled = true; });
         try {
           const res = await fetch(form.getAttribute("action") || form.action, {
@@ -501,7 +503,7 @@
           });
           const html = await res.text();
           if (!res.ok) {
-            alert(html || "Could not update cities.");
+            alert(html || "Could not update locations.");
             panel.querySelectorAll("button").forEach(function (btn) { btn.disabled = false; });
             return;
           }
@@ -509,19 +511,65 @@
           backdrop.scrollTop = y;
           requestAnimationFrame(function () {
             backdrop.scrollTop = y;
-            if (cityId) {
-              const btn = backdrop.querySelector('[data-city-id="' + cityId + '"]');
-              if (btn && btn.focus) btn.focus({ preventScroll: true });
-            }
+            const nextPanel = document.getElementById("scan-cities");
+            if (nextPanel) setScanRegion(nextPanel, activeRegion, { focus: false });
+            let btn = null;
+            if (locId) btn = backdrop.querySelector('[data-loc-id="' + locId + '"]');
+            else if (regionKey) btn = backdrop.querySelector('[data-region-key="' + regionKey + '"]');
+            if (btn && btn.focus) btn.focus({ preventScroll: true });
           });
         } catch (err) {
-          alert("Could not update cities.");
+          alert("Could not update locations.");
           panel.querySelectorAll("button").forEach(function (btn) { btn.disabled = false; });
         }
       }, true);
     }
+    const regionDraftKey = "jobscraper-scan-region";
+    function setScanRegion(panel, key, opts) {
+      if (!panel) return;
+      const tabs = Array.prototype.slice.call(panel.querySelectorAll("[data-region-pick]"));
+      if (!tabs.length) return;
+      let active = (key || "").trim();
+      if (!active || !panel.querySelector('[data-region-panel="' + active + '"]')) {
+        active = panel.getAttribute("data-active-region") || tabs[0].getAttribute("data-region-pick");
+      }
+      panel.setAttribute("data-active-region", active);
+      try { sessionStorage.setItem(regionDraftKey, active); } catch (err) {}
+      tabs.forEach(function (tab) {
+        const on = tab.getAttribute("data-region-pick") === active;
+        tab.classList.toggle("is-active", on);
+        tab.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+      panel.querySelectorAll("[data-region-panel]").forEach(function (pane) {
+        const on = pane.getAttribute("data-region-panel") === active;
+        if (on) pane.removeAttribute("hidden");
+        else pane.setAttribute("hidden", "");
+      });
+      if (opts && opts.focus) {
+        const tab = panel.querySelector('[data-region-pick="' + active + '"]');
+        if (tab && tab.focus) tab.focus({ preventScroll: true });
+      }
+    }
+    function initScanRegions() {
+      const panel = document.getElementById("scan-cities");
+      if (!panel) return;
+      let saved = "";
+      try { saved = sessionStorage.getItem(regionDraftKey) || ""; } catch (err) {}
+      setScanRegion(panel, saved || panel.getAttribute("data-active-region") || "", { focus: false });
+    }
+    if (backdrop) {
+      backdrop.addEventListener("click", function (event) {
+        const tab = event.target.closest("#scan-cities [data-region-pick]");
+        if (!tab) return;
+        const panel = document.getElementById("scan-cities");
+        if (!panel) return;
+        event.preventDefault();
+        setScanRegion(panel, tab.getAttribute("data-region-pick"), { focus: true });
+      });
+    }
     if (backdrop && backdrop.classList.contains("open")) {
       restoreScanDraft();
+      initScanRegions();
       if (location.hash === "#scan-cities") {
         const cities = document.getElementById("scan-cities");
         if (cities) cities.scrollIntoView({ block: "nearest" });
@@ -553,6 +601,7 @@
       setTimeout(finish, 320);
     }
     function openScan() {
+      initScanRegions();
       showModal(backdrop, document.getElementById("scan-keyword"));
     }
     function closeScan() {

@@ -911,3 +911,13 @@ def score_tooltip(parts: list[tuple[str, float]]) -> str:
 
 def job_score(job: dict[str, Any], keyword: str = "", profile: dict[str, Any] | None = None) -> float:
     return score_job(job, keyword, profile)[0]
+
+
+def heat_tier(score: float) -> str:
+    if score >= 75:
+        return "hot"
+    if score >= 50:
+        return "warm"
+    if score >= 25:
+        return "mild"
+    return "cool"
