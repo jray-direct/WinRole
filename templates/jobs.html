@@ -33,62 +33,43 @@
       <p>This may take a minute or two...</p>
     </div>
     <div class="scan-setup" {% if state.running %}hidden{% endif %}>
-    <p class="muted">Turn on at least one location, then set the keyword. Only jobs that pass the filters are saved.</p>
+    <p class="muted">Turn on locations and set the keyword. Pay, years, remote, and the rest are filters on the job list after the scan.</p>
     <div class="scan-section">
       <h3>Locations</h3>
       {% include "_cities_panel.html" %}
     </div>
-    <form method="post" action="{{ url_for('scrape_page') }}" class="scrape-form compact-filters">
-      <div class="scan-section span-2">
+    <form method="post" action="{{ url_for('scrape_page') }}" class="scrape-form scan-form">
+      <div class="scan-section">
         <h3>Required</h3>
+        <div class="scan-required">
+          <label>What role are you hunting?
+            <input type="text" id="scan-keyword" name="keyword" required placeholder="Network+" class="form-control">
+            <span class="hint">Saves jobs that mention this in the title or description.</span>
+          </label>
+          <label>How strict should keyword matching be?
+            <select name="kw_match" class="form-select">
+              <option value="any">Mentioned anywhere</option>
+              <option value="title">In the job title</option>
+              <option value="preferred">Required or preferred</option>
+              <option value="required">Required only</option>
+            </select>
+          </label>
+          <label class="check scan-fulltext">
+            <input type="checkbox" name="full_text" value="1" class="form-check-input">
+            <span class="scan-fulltext-copy">Fetch full job text
+              <span class="hint">Slower. Years, certs, and required vs mentioned are more accurate.</span>
+            </span>
+          </label>
+        </div>
       </div>
-      <label>What role are you hunting?
-        <input type="text" id="scan-keyword" name="keyword" required placeholder="Network+" class="form-control">
-        <span class="hint">Saves jobs that mention this in the title or description — not only exact title matches.</span>
-      </label>
-      <label>How strict should keyword matching be?
-        <select name="kw_match" class="form-select">
-          <option value="any">Mentioned anywhere</option>
-          <option value="title">In the job title</option>
-          <option value="preferred">Required or preferred</option>
-          <option value="required">Required only</option>
-        </select>
-      </label>
-      <label class="check">
-        <input type="checkbox" name="full_text" value="1" class="form-check-input"> Fetch full job text
-        <span class="hint">Slower, but years, certs, and required vs mentioned are more accurate.</span>
-      </label>
-      <div class="scan-section span-2">
-        <h3>Fit filters</h3>
+      <div class="scan-section">
+        <h3>Title filters</h3>
+        <div class="title-filters">
+          {{ templated_field("title_include", "title_include", "", templates.title_include, "Title includes", "analyst, engineer", "form") }}
+          {{ templated_field("title_exclude", "title_exclude", "", templates.title_exclude, "Title excludes", "senior, lead, intern", "form") }}
+        </div>
       </div>
-      <div class="title-filters">
-        {{ templated_field("title_include", "title_include", "", templates.title_include, "Title includes", "analyst, engineer", "form") }}
-        {{ templated_field("title_exclude", "title_exclude", "", templates.title_exclude, "Title excludes", "senior, lead, intern", "form") }}
-      </div>
-      <label class="check">
-        <input type="checkbox" name="remote" value="1" {% if profile and profile.remote_pref == 'remote' %}checked{% endif %} class="form-check-input"> Remote only
-      </label>
-      <label>Min annual salary
-        <input type="number" name="min_salary" placeholder="60000" value="{{ '%.0f' % profile.min_pay if profile and profile.min_pay else '' }}" class="form-control">
-        <span class="hint">Jobs that list no pay are kept.</span>
-      </label>
-      <label>Years of experience you have
-        <input type="number" name="my_years" min="0" max="60" step="0.5" placeholder="3" value="{{ '%g' % profile.years if profile and profile.years is not none else '' }}" class="form-control">
-        <span class="hint">Skips jobs that require more. No stated number? Kept.</span>
-      </label>
-      <label>Posted within N days
-        <input type="number" name="days" placeholder="14" class="form-control">
-      </label>
-      {{ templated_field("exclude", "exclude", "", templates.exclude, "Exclude in posting", "secret clearance, relocation", "form") }}
-      <label>Job type
-        <select name="job_type" class="form-select">
-          <option value="">Any</option>
-          {% for t in job_types %}
-          <option value="{{ t }}">{{ t | job_type_label }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <button type="submit" {% if state.running %}disabled{% endif %} class="btn btn-primary">
+      <button type="submit" {% if state.running %}disabled{% endif %} class="btn btn-primary scan-submit">
         {{ "Running…" if state.running else "Start scan" }}
       </button>
     </form>
