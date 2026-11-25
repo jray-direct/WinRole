@@ -494,6 +494,28 @@ form.scrape-form > .scan-section:first-child {
   align-items: start;
 }
 .scan-required > label { min-width: 0; }
+.scan-source { grid-column: 1 / -1; }
+.board-programs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  margin: 0.35rem 0 0.75rem;
+}
+.board-programs label.check {
+  margin: 0;
+  font-weight: 550;
+}
+.board-picks {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem 1rem;
+}
+.board-picks select[multiple] {
+  min-height: 11rem;
+}
+@media (max-width: 700px) {
+  .board-picks { grid-template-columns: 1fr; }
+}
 .scan-fulltext {
   grid-column: 1 / -1;
   align-items: flex-start;

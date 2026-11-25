@@ -26,6 +26,7 @@ _scratch/
 *.csv
 *.json
 !requirements.txt
+!spacex_filters.json
 
 # OS / editor
 .DS_Store

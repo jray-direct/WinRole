@@ -110,6 +110,12 @@ class SearchFilters:
     # preferred / required = posting treats the keyword as at least that strong.
     kw_match: str = "any"
     fetch_description: bool = False
+    # indeed = city search. spacex = the SpaceX careers jobs page.
+    source: str = "indeed"
+    board_programs: list[str] = field(default_factory=list)
+    board_locations: list[str] = field(default_factory=list)
+    board_disciplines: list[str] = field(default_factory=list)
+    board_url: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -348,6 +354,55 @@ def indeed_search_terms(keyword: str) -> list[str]:
     return [text]
 
 
+def scrape_spacex_careers(
+    filters: SearchFilters,
+    progress: ProgressFn | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Openings on spacex.com/careers/jobs that pass the same keyword rules as Indeed."""
+    from spacex import fetch_openings
+
+    log = progress or (lambda msg: print(msg, flush=True))
+    records, board_stats = fetch_openings(
+        programs=filters.board_programs,
+        locations=filters.board_locations,
+        disciplines=filters.board_disciplines,
+        title_include=filters.title_include,
+        title_exclude=filters.title_exclude,
+        keyword=filters.keyword,
+        kw_match=filters.kw_match,
+        progress=log,
+    )
+    pattern = keyword_pattern(filters.keyword)
+    collected: dict[str, dict[str, Any]] = {}
+    seen_keyword: set[str] = set()
+    keyword_hits = 0
+    for rec in records:
+        if not text_matches(haystack(rec), pattern):
+            continue
+        key = job_key(rec)
+        if key not in seen_keyword:
+            seen_keyword.add(key)
+            keyword_hits += 1
+        if not passes_post_filters(rec, filters):
+            continue
+        if key not in collected:
+            rec["_filter_keyword"] = filters.keyword
+            rec["_search_location"] = rec.get("location")
+            rec["_dedupe_key"] = key
+            collected[key] = rec
+    log(
+        f"SpaceX page: {board_stats.get('raw_fetched', 0)} listed, "
+        f"{keyword_hits} mention {filters.keyword!r}, {len(collected)} kept"
+    )
+    stats = {
+        "raw_fetched": board_stats.get("raw_fetched", 0),
+        "keyword_hits": keyword_hits,
+        "matched": len(collected),
+        "errors": list(board_stats.get("errors") or []),
+    }
+    return list(collected.values()), stats
+
+
 def scrape_all_for_keyword(
     keyword: str,
     locations: list[str],
@@ -495,18 +550,25 @@ def run_scrape(
     log = progress or (lambda msg: print(msg, flush=True))
     init_db()
     uid = user_id if user_id is not None else local_user_id()
-    locations = locations if locations is not None else get_enabled_locations(uid)
-    if not locations:
-        raise RuntimeError(f"No enabled locations for user {uid} in {DB_PATH}")
+    source = (filters.source or "indeed").strip().lower()
+    if source != "spacex":
+        locations = locations if locations is not None else get_enabled_locations(uid)
+        if not locations:
+            raise RuntimeError(f"No enabled locations for user {uid} in {DB_PATH}")
+    else:
+        locations = []
 
     started = datetime.now(timezone.utc)
     run_id = start_run(uid, filters.keyword, len(locations), filters.as_dict())
     log(f"run #{run_id}  started {started.isoformat()}")
-    log(f"locations: {len(locations)} enabled in {DB_PATH}")
-
-    jobs, stats = scrape_all_for_keyword(
-        filters.keyword, locations, filters=filters, progress=log
-    )
+    if source == "spacex":
+        log("source: SpaceX careers jobs page")
+        jobs, stats = scrape_spacex_careers(filters, progress=log)
+    else:
+        log(f"locations: {len(locations)} enabled in {DB_PATH}")
+        jobs, stats = scrape_all_for_keyword(
+            filters.keyword, locations, filters=filters, progress=log
+        )
     for rec in jobs:
         rec.setdefault("_dedupe_key", job_key(rec))
 

@@ -36,8 +36,9 @@
       <p>This may take a minute or two...</p>
     </div>
     <div class="scan-setup" {% if state.running %}hidden{% endif %}>
-    <p class="muted">Turn on locations and set the keyword. Pay, years, remote, and the rest are filters on the job list after the scan.</p>
-    <div class="scan-section">
+    <p class="muted" data-scan-source="indeed">Turn on locations and set the keyword. Pay, years, remote, and the rest are filters on the job list after the scan.</p>
+    <p class="muted" data-scan-source="spacex" hidden>Reads the SpaceX jobs page, then keeps openings whose posting matches your keyword. Pay, years, remote, and the rest still filter the list afterward.</p>
+    <div class="scan-section" data-scan-source="indeed">
       <h3>Locations</h3>
       {% include "_cities_panel.html" %}
     </div>
@@ -45,6 +46,14 @@
       <div class="scan-section">
         <h3>Required</h3>
         <div class="scan-required">
+          <label class="scan-source">Where should this scan look?
+            <select name="source" id="scan-source" class="form-select">
+              <option value="indeed">Indeed — cities you turned on</option>
+              <option value="spacex">SpaceX careers — spacex.com/careers/jobs</option>
+            </select>
+            <span class="hint" data-scan-source="indeed">Searches the cities above.</span>
+            <span class="hint" data-scan-source="spacex" hidden>Every opening on spacex.com/careers/jobs, including Starlink, Starship, Falcon, Dragon, Starshield, and the SpaceXSI roles that page lists. The writeup is the posting behind each row.</span>
+          </label>
           <label>What role are you hunting?
             <input type="text" id="scan-keyword" name="keyword" required placeholder="Network+" class="form-control">
             <span class="hint">Saves jobs that mention this in the title or description.</span>
@@ -58,11 +67,48 @@
               <option value="required">Required only</option>
             </select>
           </label>
-          <label class="check scan-fulltext">
+          <label class="check scan-fulltext" data-scan-source="indeed">
             <input type="checkbox" name="full_text" value="1" class="form-check-input">
             <span class="scan-fulltext-copy">Fetch full job text
               <span class="hint">Slower. Years, certs, and required vs mentioned are more accurate.</span>
             </span>
+          </label>
+        </div>
+      </div>
+      <div class="scan-section" data-scan-source="spacex" hidden>
+        <h3>SpaceX page filters</h3>
+        <p class="hint">Same filters as the jobs page. Leave them empty to search the whole board. A pasted jobs link fills in whatever it already had selected.</p>
+        <label>Jobs page link
+          <input type="url" name="board_url" placeholder="https://www.spacex.com/careers/jobs?programs=Starlink&amp;disciplines=Network" class="form-control">
+        </label>
+        <div class="board-programs" role="group" aria-label="Programs">
+          {% for program in spacex_filters.programs %}
+          <label class="check">
+            <input type="checkbox" name="sx_programs" value="{{ program }}" class="form-check-input">
+            {{ program }}
+          </label>
+          {% endfor %}
+        </div>
+        <div class="board-picks">
+          <label>Sites
+            <select name="sx_locations" multiple size="8" class="form-select" aria-label="SpaceX sites">
+              {% for place in spacex_filters.locations %}
+              <option value="{{ place }}">{{ place }}</option>
+              {% endfor %}
+            </select>
+            <span class="hint">Hold Ctrl to pick more than one. Remote also matches Remote, United States and Remote, International.</span>
+          </label>
+          <label>Disciplines
+            <select name="sx_disciplines" multiple size="8" class="form-select" aria-label="SpaceX disciplines">
+              {% for cat in spacex_filters.categories %}
+              <optgroup label="{{ cat.name }}">
+                <option value="category:{{ cat.name }}">All {{ cat.name }}</option>
+                {% for discipline in cat.disciplines %}
+                <option value="{{ discipline }}">{{ discipline }}</option>
+                {% endfor %}
+              </optgroup>
+              {% endfor %}
+            </select>
           </label>
         </div>
       </div>
@@ -430,11 +476,35 @@
     const backdrop = document.getElementById("scan-modal");
     const scanForm = backdrop ? backdrop.querySelector("form.scrape-form") : null;
     const scanDraftKey = "jobscraper-scan-draft";
+    function syncScanSource() {
+      const sourceEl = document.getElementById("scan-source");
+      const mode = sourceEl && sourceEl.value === "spacex" ? "spacex" : "indeed";
+      document.querySelectorAll("[data-scan-source]").forEach(function (el) {
+        const show = el.getAttribute("data-scan-source").split(/\s+/).indexOf(mode) >= 0;
+        el.hidden = !show;
+      });
+      const keyword = document.getElementById("scan-keyword");
+      if (keyword) keyword.required = mode !== "spacex";
+    }
     function saveScanDraft() {
       if (!scanForm) return;
       const data = {};
       scanForm.querySelectorAll("input[name], select[name], textarea[name]").forEach(function (el) {
-        data[el.name] = el.type === "checkbox" ? el.checked : el.value;
+        if (el.type === "checkbox") {
+          const group = scanForm.querySelectorAll('input[type="checkbox"][name="' + CSS.escape(el.name) + '"]');
+          if (group.length > 1) {
+            if (!data[el.name]) data[el.name] = [];
+            if (el.checked) data[el.name].push(el.value);
+            return;
+          }
+          data[el.name] = el.checked;
+          return;
+        }
+        if (el.multiple) {
+          data[el.name] = Array.from(el.selectedOptions).map(function (opt) { return opt.value; });
+          return;
+        }
+        data[el.name] = el.value;
       });
       sessionStorage.setItem(scanDraftKey, JSON.stringify(data));
     }
@@ -446,10 +516,27 @@
       try { data = JSON.parse(raw); } catch (err) { return; }
       scanForm.querySelectorAll("input[name], select[name], textarea[name]").forEach(function (el) {
         if (!Object.prototype.hasOwnProperty.call(data, el.name)) return;
-        if (el.type === "checkbox") el.checked = !!data[el.name];
-        else el.value = data[el.name] == null ? "" : data[el.name];
+        if (el.type === "checkbox") {
+          const group = scanForm.querySelectorAll('input[type="checkbox"][name="' + CSS.escape(el.name) + '"]');
+          if (group.length > 1) {
+            const picked = Array.isArray(data[el.name]) ? data[el.name] : [];
+            el.checked = picked.indexOf(el.value) >= 0;
+            return;
+          }
+          el.checked = !!data[el.name];
+          return;
+        }
+        if (el.multiple) {
+          const picked = Array.isArray(data[el.name]) ? data[el.name] : (data[el.name] ? [String(data[el.name])] : []);
+          Array.from(el.options).forEach(function (opt) {
+            opt.selected = picked.indexOf(opt.value) >= 0;
+          });
+          return;
+        }
+        el.value = data[el.name] == null ? "" : data[el.name];
         el.dispatchEvent(new Event("input", { bubbles: true }));
       });
+      syncScanSource();
     }
     if (backdrop) {
       backdrop.addEventListener("submit", async function (event) {
@@ -552,6 +639,9 @@
         setScanRegion(panel, tab.getAttribute("data-region-pick"), { focus: true });
       });
     }
+    const sourceEl = document.getElementById("scan-source");
+    if (sourceEl) sourceEl.addEventListener("change", syncScanSource);
+    syncScanSource();
     if (backdrop && backdrop.classList.contains("open")) {
       restoreScanDraft();
       initScanRegions();
@@ -586,6 +676,7 @@
       setTimeout(finish, 320);
     }
     function openScan() {
+      syncScanSource();
       initScanRegions();
       showModal(backdrop, document.getElementById("scan-keyword"));
     }

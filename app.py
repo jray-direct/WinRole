@@ -80,6 +80,7 @@ from ai_client import (
 )
 from resume import DEGREE_LABELS, experience_section, load_overrides, splice_experience, unknown_skill_phrases
 from scrape import SearchFilters, run_scrape
+from spacex import careers_filter_options, merge_board_filters
 from textutil import (
     CERT_STACK,
     CLEARANCE_LABELS,
@@ -417,6 +418,8 @@ def _posting_link(job: dict[str, Any]) -> tuple[str | None, str]:
         label = "LinkedIn"
     elif "indeed" in blob:
         label = "Indeed"
+    elif site == "spacex" or "greenhouse.io" in blob and "spacex" in blob:
+        label = "SpaceX"
     elif site:
         label = site.replace("_", " ").title()
     else:
@@ -746,6 +749,7 @@ def jobs():
         grouped=get_grouped_locations(_uid()),
         enabled_count=len(get_enabled_locations(_uid())),
         templates=templates_by_kind(_uid()),
+        spacex_filters=careers_filter_options(),
         ai_ready=ai_settings()["ready"],
         sort_options=[
             ("score", "Heat"),
@@ -953,6 +957,18 @@ def scrape_page():
         title_exclude_raw = (request.form.get("title_exclude") or "").strip()
         job_type = (request.form.get("job_type") or "").strip().lower()
         keyword = (request.form.get("keyword") or "").strip()
+        source = (request.form.get("source") or "indeed").strip().lower()
+        if source not in ("indeed", "spacex"):
+            source = "indeed"
+        board_url = (request.form.get("board_url") or "").strip()
+        board_programs, board_locations, board_disciplines, url_keyword = merge_board_filters(
+            request.form.getlist("sx_programs"),
+            request.form.getlist("sx_locations"),
+            request.form.getlist("sx_disciplines"),
+            board_url,
+        )
+        if source == "spacex" and not keyword and url_keyword:
+            keyword = url_keyword
         if not keyword:
             flash("Enter a keyword.", "error")
             return redirect(url_for("jobs", scan=1))
@@ -979,22 +995,29 @@ def scrape_page():
             title_exclude=[p.strip() for p in title_exclude_raw.split(",") if p.strip()],
             job_type=job_type if job_type in JOB_TYPES else None,
             kw_match=kw_match,
-            fetch_description=request.form.get("full_text") == "1",
+            fetch_description=request.form.get("full_text") == "1" or source == "spacex",
+            source=source,
+            board_programs=board_programs if source == "spacex" else [],
+            board_locations=board_locations if source == "spacex" else [],
+            board_disciplines=board_disciplines if source == "spacex" else [],
+            board_url=board_url if source == "spacex" else "",
         )
-        locations = get_enabled_locations(_uid())
-        if not locations:
-            flash("Enable at least one location first.", "error")
-            return redirect(url_for("jobs", scan=1))
+        if source != "spacex":
+            locations = get_enabled_locations(_uid())
+            if not locations:
+                flash("Enable at least one location first.", "error")
+                return redirect(url_for("jobs", scan=1))
 
         try:
             ahead = _enqueue_scan(_uid(), filters)
         except ValueError as exc:
             flash(str(exc), "error")
             return redirect(url_for("jobs", scan=1))
+        where = " on the SpaceX careers page" if source == "spacex" else ""
         if ahead:
-            flash(f"Scan for {keyword!r} queued behind {ahead} other scan(s).", "info")
+            flash(f"Scan for {keyword!r}{where} queued behind {ahead} other scan(s).", "info")
         else:
-            flash(f"Scan started for {keyword!r}.", "success")
+            flash(f"Scan started for {keyword!r}{where}.", "success")
         return redirect(url_for("jobs", scan=1))
 
     return redirect(url_for("jobs", scan=1))
