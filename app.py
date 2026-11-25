@@ -53,6 +53,10 @@ from db import (
     list_materials,
     list_runs,
     query_jobs,
+    SCAN_SOURCES,
+    decode_scan,
+    encode_scan,
+    scan_label,
     get_user_resume_profile,
     resume_profile_for_material,
     save_profile,
@@ -80,6 +84,11 @@ from ai_client import (
 )
 from resume import DEGREE_LABELS, experience_section, load_overrides, splice_experience, unknown_skill_phrases
 from scrape import SearchFilters, run_scrape
+from amazon import filter_options as amazon_filter_options
+from amazon import merge_amazon_filters
+from boards import COMPANY_BOARDS, board_catalog, merge_company_filters
+from ibm import filter_options as ibm_filter_options
+from ibm import merge_ibm_filters
 from spacex import careers_filter_options, merge_board_filters
 from textutil import (
     CERT_STACK,
@@ -420,6 +429,8 @@ def _posting_link(job: dict[str, Any]) -> tuple[str | None, str]:
         label = "Indeed"
     elif site == "spacex" or "greenhouse.io" in blob and "spacex" in blob:
         label = "SpaceX"
+    elif site in SCAN_SOURCES:
+        label = SCAN_SOURCES[site]
     elif site:
         label = site.replace("_", " ").title()
     else:
@@ -504,19 +515,37 @@ def _apply_readout_action(overrides: dict[str, Any], action: str, value: str, de
     return overrides
 
 
+def _scan_choice(raw: str) -> dict[str, str]:
+    """The scan picker value: bare keyword, or source|keyword. One match keeps the old link selected."""
+    source, keyword = decode_scan(raw)
+    if keyword and not source:
+        matches = [
+            row for row in list_keywords(_uid())
+            if str(row["keyword"]).lower() == keyword.lower()
+        ]
+        if len(matches) == 1:
+            source = matches[0]["source"]
+    value = encode_scan(source, keyword) if source and keyword else keyword
+    return {"keyword": keyword, "scan_source": source, "scan": value}
+
+
 @app.route("/")
 def insights():
     last = get_latest_run(_uid())
     if "keyword" in request.args:
-        keyword = (request.args.get("keyword") or "").strip()
+        raw = (request.args.get("keyword") or "").strip()
     else:
-        keyword = ((last or {}).get("keyword") or "").strip()
-    data = get_insights(_uid(), keyword)
+        stored = (last or {}).get("filters") or {}
+        last_keyword = ((last or {}).get("keyword") or "").strip()
+        last_source = (stored.get("source") or "").strip()
+        raw = encode_scan(last_source, last_keyword) if last_source and last_keyword else last_keyword
+    chosen = _scan_choice(raw)
+    data = get_insights(_uid(), chosen["keyword"], source=chosen["scan_source"] or None)
     return render_template(
         "insights.html",
         insights=data,
         keywords=list_keywords(_uid()),
-        selected_keyword=keyword,
+        selected_keyword=chosen["scan"],
         status_labels=STATUS_LABELS,
     )
 
@@ -587,8 +616,11 @@ def jobs():
         if remote_only and profile.get("remote_pref") == "remote":
             profile_defaults.append("remote")
     status_arg = last_arg("status") or ""
+    chosen = _scan_choice(request.args.get("keyword") or "")
     filters = {
-        "keyword": request.args.get("keyword") or "",
+        "keyword": chosen["keyword"],
+        "scan_source": chosen["scan_source"],
+        "scan": chosen["scan"],
         "q": request.args.get("q") or "",
         "remote_only": remote_only,
         "min_salary": min_salary or "",
@@ -750,6 +782,9 @@ def jobs():
         enabled_count=len(get_enabled_locations(_uid())),
         templates=templates_by_kind(_uid()),
         spacex_filters=careers_filter_options(),
+        amazon_filters=amazon_filter_options(),
+        ibm_filters=ibm_filter_options(),
+        company_boards=board_catalog(),
         ai_ready=ai_settings()["ready"],
         sort_options=[
             ("score", "Heat"),
@@ -958,7 +993,7 @@ def scrape_page():
         job_type = (request.form.get("job_type") or "").strip().lower()
         keyword = (request.form.get("keyword") or "").strip()
         source = (request.form.get("source") or "indeed").strip().lower()
-        if source not in ("indeed", "spacex"):
+        if source not in ("indeed", "spacex", "amazon", "ibm", *COMPANY_BOARDS):
             source = "indeed"
         board_url = (request.form.get("board_url") or "").strip()
         board_programs, board_locations, board_disciplines, url_keyword = merge_board_filters(
@@ -967,8 +1002,35 @@ def scrape_page():
             request.form.getlist("sx_disciplines"),
             board_url,
         )
+        amazon = merge_amazon_filters(
+            request.form.getlist("amz_categories"),
+            request.form.getlist("amz_locations"),
+            request.form.getlist("amz_teams"),
+            request.form.getlist("amz_schedules"),
+            request.form.get("amz_loc_query") or "",
+            request.form.get("amz_intern") == "1",
+            request.form.get("amz_seasonal") == "1",
+            (request.form.get("amz_url") or "").strip(),
+        )
+        ibm = merge_ibm_filters(
+            request.form.getlist("ibm_categories"),
+            request.form.getlist("ibm_countries"),
+            request.form.getlist("ibm_cities"),
+            request.form.getlist("ibm_levels"),
+            request.form.getlist("ibm_modes"),
+            (request.form.get("ibm_url") or "").strip(),
+        )
+        company = None
         if source == "spacex" and not keyword and url_keyword:
             keyword = url_keyword
+        if source == "amazon" and not keyword and amazon["keyword"]:
+            keyword = amazon["keyword"]
+        if source == "ibm" and not keyword and ibm["keyword"]:
+            keyword = ibm["keyword"]
+        if source in COMPANY_BOARDS:
+            company = merge_company_filters(source, request.form)
+            if not keyword and company["keyword"]:
+                keyword = company["keyword"]
         if not keyword:
             flash("Enter a keyword.", "error")
             return redirect(url_for("jobs", scan=1))
@@ -995,14 +1057,40 @@ def scrape_page():
             title_exclude=[p.strip() for p in title_exclude_raw.split(",") if p.strip()],
             job_type=job_type if job_type in JOB_TYPES else None,
             kw_match=kw_match,
-            fetch_description=request.form.get("full_text") == "1" or source == "spacex",
+            fetch_description=request.form.get("full_text") == "1" or source in ("spacex", "amazon", "ibm", *COMPANY_BOARDS),
             source=source,
             board_programs=board_programs if source == "spacex" else [],
-            board_locations=board_locations if source == "spacex" else [],
+            board_locations=(
+                board_locations if source == "spacex"
+                else amazon["locations"] if source == "amazon"
+                else ibm["cities"] if source == "ibm"
+                else company["locations"] if company
+                else []
+            ),
             board_disciplines=board_disciplines if source == "spacex" else [],
-            board_url=board_url if source == "spacex" else "",
+            board_url=(
+                board_url if source == "spacex"
+                else (request.form.get("amz_url") or "").strip() if source == "amazon"
+                else (request.form.get("ibm_url") or "").strip() if source == "ibm"
+                else (request.form.get(f"{source}_url") or "").strip() if company
+                else ""
+            ),
+            board_categories=(
+                amazon["categories"] if source == "amazon"
+                else ibm["categories"] if source == "ibm"
+                else company["categories"] if company
+                else []
+            ),
+            board_teams=amazon["teams"] if source == "amazon" else [],
+            board_schedules=amazon["schedules"] if source == "amazon" else [],
+            board_loc_query=amazon["loc_query"] if source == "amazon" else "",
+            board_intern=amazon["intern"] if source == "amazon" else False,
+            board_seasonal=amazon["seasonal"] if source == "amazon" else False,
+            board_countries=ibm["countries"] if source == "ibm" else (company["countries"] if company else []),
+            board_levels=ibm["levels"] if source == "ibm" else [],
+            board_modes=ibm["modes"] if source == "ibm" else (company["modes"] if company else []),
         )
-        if source != "spacex":
+        if source not in ("spacex", "amazon", "ibm", *COMPANY_BOARDS):
             locations = get_enabled_locations(_uid())
             if not locations:
                 flash("Enable at least one location first.", "error")
@@ -1013,7 +1101,21 @@ def scrape_page():
         except ValueError as exc:
             flash(str(exc), "error")
             return redirect(url_for("jobs", scan=1))
-        where = " on the SpaceX careers page" if source == "spacex" else ""
+        where = {
+            "spacex": " on the SpaceX careers page",
+            "amazon": " on Amazon Jobs in the United States",
+            "ibm": " on IBM careers",
+            "oracle": " on Oracle careers",
+            "hpe": " on HPE careers",
+            "verizon": " on Verizon careers",
+            "dell": " on Dell careers",
+            "cisco": " on Cisco careers",
+            "tesla": " on Tesla careers",
+            "walmart": " on Walmart technology careers",
+            "unitedhealth": " on UnitedHealth Group technology careers",
+            "wellsfargo": " on Wells Fargo technology careers in the United States",
+            "spectrum": " on Spectrum careers in the United States",
+        }.get(source, "")
         if ahead:
             flash(f"Scan for {keyword!r}{where} queued behind {ahead} other scan(s).", "info")
         else:
@@ -1050,6 +1152,7 @@ def scrape_clear_log():
 @app.post("/hygiene/keyword")
 def hygiene_delete_keyword():
     keyword = (request.form.get("keyword") or "").strip()
+    source, keyword = decode_scan(keyword)
     if not keyword:
         flash("Pick a scan to delete.")
         return redirect(url_for("jobs"))
@@ -1057,21 +1160,22 @@ def hygiene_delete_keyword():
     def n_jobs(count: int) -> str:
         return "1 job" if count == 1 else f"{count} jobs"
 
+    label = scan_label(keyword, source) if source else keyword
     try:
-        result = delete_jobs_for_keyword(_uid(), keyword)
+        result = delete_jobs_for_keyword(_uid(), keyword, source=source or None)
         deleted = int(result["deleted"])
         kept = int(result.get("kept") or 0)
         if deleted and kept:
             flash(
-                f"Removed {keyword!r}. Deleted {n_jobs(deleted)}. "
+                f"Removed {label!r}. Deleted {n_jobs(deleted)}. "
                 f"Kept {n_jobs(kept)} that also matched another scan."
             )
         elif deleted:
-            flash(f"Removed {keyword!r} and deleted {n_jobs(deleted)}.")
+            flash(f"Removed {label!r} and deleted {n_jobs(deleted)}.")
         elif kept:
-            flash(f"Removed {keyword!r}. Kept {n_jobs(kept)} that also matched another scan.")
+            flash(f"Removed {label!r}. Kept {n_jobs(kept)} that also matched another scan.")
         else:
-            flash(f"Removed {keyword!r}.")
+            flash(f"Removed {label!r}.")
     except ValueError as exc:
         flash(str(exc))
     return redirect(url_for("jobs"))
@@ -1093,8 +1197,11 @@ def tracker():
     status = (request.args.get("status") or "").strip()
     if status and status not in STATUSES:
         status = ""
+    chosen = _scan_choice(request.args.get("keyword") or "")
     filters = {
-        "keyword": request.args.get("keyword") or "",
+        "keyword": chosen["keyword"],
+        "scan_source": chosen["scan_source"],
+        "scan": chosen["scan"],
         "q": request.args.get("q") or "",
         "status": status,
         "heard_back": request.args.get("heard_back") or "",

@@ -18,11 +18,11 @@
 </tr>
 {% endmacro %}
 {% block body %}
-{% set kw = insights.keyword or none %}
+{% set kw = insights.scan or none %}
 <header class="page-head">
   <div>
     <p class="kicker">Market</p>
-    <h1>Insights{% if insights.keyword %} · {{ insights.keyword }}{% endif %}</h1>
+    <h1>Insights{% if insights.scan_label %} · {{ insights.scan_label }}{% endif %}</h1>
     <p class="muted">{{ insights.total }} jobs in this view · {{ insights.locations_enabled }}/{{ insights.locations_total }} locations on</p>
   </div>
   <div class="head-actions scope-actions">
@@ -32,8 +32,8 @@
         <select name="keyword" onchange="this.form.submit()" class="form-select" aria-label="Scope">
           <option value="">All stored jobs</option>
           {% for k in keywords %}
-          <option value="{{ k.keyword }}" {% if selected_keyword == k.keyword %}selected{% endif %}>
-            {{ k.keyword }} ({{ k.n }})
+          <option value="{{ k.value }}" {% if selected_keyword == k.value %}selected{% endif %}>
+            {{ k.label }} ({{ k.n }})
           </option>
           {% endfor %}
         </select>
@@ -282,11 +282,11 @@
     <h2>Scan overlap</h2>
     <p class="muted">Jobs found by more than one scan keyword (deleting a scan removes these too).</p>
     <table class="pay-table">
-      <thead><tr><th>Keyword</th><th class="n">Jobs</th><th class="n">Also in another scan</th></tr></thead>
+      <thead><tr><th>Scan</th><th class="n">Jobs</th><th class="n">Also in another scan</th></tr></thead>
       <tbody>
         {% for row in insights.keyword_overlap %}
         <tr>
-          <td><a href="{{ url_for('jobs', keyword=row.label, f=1) }}">{{ row.label }}</a></td>
+          <td><a href="{{ url_for('jobs', keyword=row.value, f=1) }}">{{ row.label }}</a></td>
           <td class="n">{{ row.n }}</td>
           <td class="n">{{ row.overlap }} · {{ row.pct }}%</td>
         </tr>
@@ -311,7 +311,7 @@
       {% for run in insights.recent_runs %}
       <tr>
         <td>{{ run.id }}</td>
-        <td>{{ run.keyword }}</td>
+        <td>{{ run.label or run.keyword }}</td>
         <td title="{{ run.started_at }} UTC">{{ run.started_at | ago }}</td>
         <td class="n">{{ run.matched }}</td>
         <td class="n">{{ run.inserted }}</td>

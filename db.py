@@ -472,6 +472,11 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     kw_cols = {row[1] for row in conn.execute("PRAGMA table_info(job_keywords)")}
     if "stance" not in kw_cols:
         conn.execute("ALTER TABLE job_keywords ADD COLUMN stance TEXT")
+    if "source" not in kw_cols:
+        conn.execute(
+            "ALTER TABLE job_keywords ADD COLUMN source TEXT NOT NULL DEFAULT 'indeed'"
+        )
+    _backfill_scan_sources(conn)
     mat_cols = {row[1] for row in conn.execute("PRAGMA table_info(materials)")}
     if "extracted_text" not in mat_cols:
         conn.execute("ALTER TABLE materials ADD COLUMN extracted_text TEXT")
@@ -638,11 +643,13 @@ def _migrate_multiuser(conn: sqlite3.Connection) -> None:
                     job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
                     keyword TEXT NOT NULL COLLATE NOCASE,
                     stance TEXT,
+                    source TEXT NOT NULL DEFAULT 'indeed',
                     PRIMARY KEY (user_id, job_id, keyword)
                 )
                 """,
-                f"INSERT INTO job_keywords (user_id, job_id, keyword, stance) "
-                f"SELECT {owner}, job_id, keyword, stance FROM job_keywords__old",
+                f"INSERT INTO job_keywords (user_id, job_id, keyword, stance, source) "
+                f"SELECT {owner}, job_id, keyword, stance, "
+                f"COALESCE(source, 'indeed') FROM job_keywords__old",
                 (
                     "CREATE INDEX IF NOT EXISTS idx_keywords_keyword ON job_keywords(keyword)",
                     "CREATE INDEX IF NOT EXISTS idx_job_keywords_job ON job_keywords(job_id)",
@@ -832,6 +839,76 @@ def enrich_text(title: Any, description: Any) -> dict[str, Any]:
         "cert_stances": json.dumps(certs) if certs else None,
         "clearance": classify_clearance(hay),
     }
+
+
+SCAN_SOURCES = {
+    "indeed": "Indeed",
+    "spacex": "SpaceX",
+    "amazon": "Amazon",
+    "ibm": "IBM",
+    "oracle": "Oracle",
+    "hpe": "HPE",
+    "verizon": "Verizon",
+    "dell": "Dell",
+    "cisco": "Cisco",
+    "tesla": "Tesla",
+    "walmart": "Walmart",
+    "unitedhealth": "UnitedHealth Group",
+    "wellsfargo": "Wells Fargo",
+    "spectrum": "Spectrum",
+}
+
+
+def normalize_scan_source(source: str | None) -> str:
+    key = (source or "indeed").strip().lower()
+    return key if key in SCAN_SOURCES else "indeed"
+
+
+def scan_label(keyword: str, source: str | None) -> str:
+    """How a saved scan is named: the keyword, then the board it was run on."""
+    name = SCAN_SOURCES.get(normalize_scan_source(source), "Indeed")
+    return f"{keyword} · {name}"
+
+
+def encode_scan(source: str | None, keyword: str) -> str:
+    return f"{normalize_scan_source(source)}|{keyword}"
+
+
+def decode_scan(raw: str | None) -> tuple[str, str]:
+    """Split a scan picker value into (source, keyword). A bare keyword has no source."""
+    text = (raw or "").strip()
+    if "|" in text:
+        source, keyword = text.split("|", 1)
+        source = source.strip().lower()
+        keyword = keyword.strip()
+        if source in SCAN_SOURCES and keyword:
+            return source, keyword
+    return "", text
+
+
+def _backfill_scan_sources(conn: sqlite3.Connection) -> None:
+    """Tag company-board jobs that were saved before scans remembered their source."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(job_keywords)")}
+    if "source" not in cols:
+        return
+    conn.execute(
+        """
+        UPDATE job_keywords
+        SET source = (
+            SELECT lower(j.site) FROM jobs j WHERE j.id = job_keywords.job_id
+        )
+        WHERE EXISTS (
+            SELECT 1 FROM jobs j
+            WHERE j.id = job_keywords.job_id
+              AND lower(j.site) IN (
+                    'spacex', 'amazon', 'ibm', 'oracle', 'hpe',
+                    'verizon', 'dell', 'cisco', 'tesla',
+                    'walmart', 'unitedhealth', 'wellsfargo', 'spectrum'
+              )
+        )
+          AND (source IS NULL OR source = '' OR source = 'indeed')
+        """
+    )
 
 
 def keyword_stance(title: Any, description: Any, keyword: str) -> str:
@@ -1422,6 +1499,7 @@ def upsert_jobs(
     records: list[dict[str, Any]],
     keyword: str,
     db_path: Path | None = None,
+    source: str | None = None,
 ) -> dict[str, int]:
     """Store postings once (shared), then link them to this user's scan.
 
@@ -1431,6 +1509,7 @@ def upsert_jobs(
     now = utc_now()
     inserted = 0
     updated = 0
+    scan_source = normalize_scan_source(source)
 
     for start in range(0, len(records), _UPSERT_BATCH):
         chunk = records[start : start + _UPSERT_BATCH]
@@ -1590,11 +1669,13 @@ def upsert_jobs(
                     updated += 1
                 conn.execute(
                     """
-                    INSERT INTO job_keywords (user_id, job_id, keyword, stance)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(user_id, job_id, keyword) DO UPDATE SET stance = excluded.stance
+                    INSERT INTO job_keywords (user_id, job_id, keyword, stance, source)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, job_id, keyword) DO UPDATE SET
+                        stance = excluded.stance,
+                        source = excluded.source
                     """,
-                    (user_id, job_id, keyword, stance),
+                    (user_id, job_id, keyword, stance, scan_source),
                 )
             conn.commit()
     _invalidate_caches()
@@ -1683,10 +1764,14 @@ def get_job(user_id: int, job_id: int, db_path: Path | None = None) -> dict[str,
             return None
         job = dict(row)
         kws = conn.execute(
-            "SELECT keyword FROM job_keywords WHERE user_id = ? AND job_id = ? ORDER BY keyword",
+            """
+            SELECT keyword, COALESCE(NULLIF(source, ''), 'indeed') AS source
+            FROM job_keywords WHERE user_id = ? AND job_id = ? ORDER BY keyword
+            """,
             (user_id, job_id),
         ).fetchall()
         job["keywords"] = [k["keyword"] for k in kws]
+        job["scan_labels"] = [scan_label(k["keyword"], k["source"]) for k in kws]
         job["pay_label"] = format_pay(job)
         job["pay_estimated"] = job.get("salary_source") == "estimate"
         job["pay_hint"] = pay_hint(job)
@@ -2296,6 +2381,7 @@ def _job_filters_sql(user_id: int, filters: dict[str, Any]) -> tuple[str, list[A
     args: list[Any] = []
 
     keyword = (filters.get("keyword") or "").strip()
+    scan_source = normalize_scan_source(filters.get("scan_source")) if filters.get("scan_source") else ""
     if keyword:
         stance = (filters.get("stance") or "").strip().lower()
         extra = ""
@@ -2303,12 +2389,16 @@ def _job_filters_sql(user_id: int, filters: dict[str, Any]) -> tuple[str, list[A
             extra = " AND IFNULL(jk.stance, 'mentioned') = 'required'"
         elif stance == "preferred":
             extra = " AND IFNULL(jk.stance, 'mentioned') IN ('required', 'preferred')"
+        if scan_source:
+            extra += " AND jk.source = ?"
         clauses.append(
             "j.id IN (SELECT jk.job_id FROM job_keywords jk "
             "WHERE jk.user_id = ? AND jk.keyword = ? COLLATE NOCASE"
             f"{extra})"
         )
         args.extend([user_id, keyword])
+        if scan_source:
+            args.append(scan_source)
 
     q = (filters.get("q") or "").strip()
     if q:
@@ -2474,6 +2564,7 @@ def query_jobs(
         profile = get_profile(user_id, db_path)
     where, args = _job_filters_sql(user_id, filters)
     keyword = (filters.get("keyword") or "").strip()
+    scan_source = normalize_scan_source(filters.get("scan_source")) if filters.get("scan_source") else ""
     exclude = _parse_exclude(filters)
     title_include = parse_phrases(filters.get("title_include"))
     title_exclude = parse_phrases(filters.get("title_exclude"))
@@ -2482,11 +2573,15 @@ def query_jobs(
     select_args: list[Any] = []
     if keyword:
         # How this user's scan framed the keyword (required / preferred / ...) feeds the score.
+        source_sql = " AND jk.source = ?" if scan_source else ""
         cols += (
             ", (SELECT jk.stance FROM job_keywords jk WHERE jk.user_id = ? "
-            "AND jk.job_id = j.id AND jk.keyword = ? COLLATE NOCASE) AS kw_stance"
+            "AND jk.job_id = j.id AND jk.keyword = ? COLLATE NOCASE"
+            f"{source_sql}) AS kw_stance"
         )
         select_args.extend([user_id, keyword])
+        if scan_source:
+            select_args.append(scan_source)
     sql = (
         f"SELECT {cols} FROM jobs j "
         f"JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ? "
@@ -2603,6 +2698,7 @@ def list_keywords(user_id: int, db_path: Path | None = None) -> list[dict[str, A
             """
             SELECT
                 k.keyword,
+                COALESCE(NULLIF(k.source, ''), 'indeed') AS source,
                 COUNT(*) AS n,
                 SUM(CASE WHEN extra.n > 1 THEN 1 ELSE 0 END) AS overlap
             FROM job_keywords k
@@ -2613,12 +2709,21 @@ def list_keywords(user_id: int, db_path: Path | None = None) -> list[dict[str, A
                 GROUP BY job_id
             ) extra ON extra.job_id = k.job_id
             WHERE k.user_id = ?
-            GROUP BY k.keyword
+            GROUP BY k.keyword, COALESCE(NULLIF(k.source, ''), 'indeed')
             ORDER BY n DESC, keyword ASC
             """,
             (user_id, user_id),
         ).fetchall()
-    return [dict(r) for r in rows]
+    scans = []
+    for row in rows:
+        item = dict(row)
+        source = normalize_scan_source(item.get("source"))
+        keyword = item["keyword"]
+        item["source"] = source
+        item["label"] = scan_label(keyword, source)
+        item["value"] = encode_scan(source, keyword)
+        scans.append(item)
+    return scans
 
 
 def get_profile(user_id: int, db_path: Path | None = None) -> dict[str, Any] | None:
@@ -2751,10 +2856,18 @@ _YEAR_BUCKETS = (
 )
 
 
-def get_insights(user_id: int, keyword: str | None = None, db_path: Path | None = None) -> dict[str, Any]:
+def get_insights(
+    user_id: int,
+    keyword: str | None = None,
+    db_path: Path | None = None,
+    source: str | None = None,
+) -> dict[str, Any]:
     init_db(db_path)
+    if source is None and keyword and "|" in keyword:
+        source, keyword = decode_scan(keyword)
     keyword = (keyword or "").strip()
-    cache_key = f"{db_path or DB_PATH}::{user_id}::{keyword.lower()}"
+    scan_source = normalize_scan_source(source) if source else ""
+    cache_key = f"{db_path or DB_PATH}::{user_id}::{keyword.lower()}::{scan_source}"
     cached = _INSIGHTS_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -2765,9 +2878,13 @@ def get_insights(user_id: int, keyword: str | None = None, db_path: Path | None 
     if keyword:
         scope = (
             "j.id IN (SELECT jk.job_id FROM job_keywords jk "
-            "WHERE jk.user_id = ? AND jk.keyword = ? COLLATE NOCASE)"
+            "WHERE jk.user_id = ? AND jk.keyword = ? COLLATE NOCASE"
+            + (" AND jk.source = ?" if scan_source else "")
+            + ")"
         )
         scope_args = [user_id, keyword]
+        if scan_source:
+            scope_args.append(scan_source)
     from_sql = "FROM jobs j JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ?"
 
     with connect(db_path) as conn:
@@ -2787,9 +2904,11 @@ def get_insights(user_id: int, keyword: str | None = None, db_path: Path | None 
             conn.execute(
                 """
                 SELECT IFNULL(stance, 'mentioned') AS stance, COUNT(*) AS n
-                FROM job_keywords WHERE user_id = ? AND keyword = ? COLLATE NOCASE GROUP BY 1
-                """,
-                (user_id, keyword),
+                FROM job_keywords WHERE user_id = ? AND keyword = ? COLLATE NOCASE
+                """
+                + (" AND source = ?" if scan_source else "")
+                + " GROUP BY 1",
+                (user_id, keyword, scan_source) if scan_source else (user_id, keyword),
             ).fetchall()
             if keyword
             else []
@@ -2797,17 +2916,25 @@ def get_insights(user_id: int, keyword: str | None = None, db_path: Path | None 
         job_count = conn.execute(
             "SELECT COUNT(*) FROM user_jobs WHERE user_id = ?", (user_id,)
         ).fetchone()[0]
-        recent_runs = [
-            dict(r)
-            for r in conn.execute(
-                """
-                SELECT id, keyword, started_at, ended_at, matched, inserted, updated,
-                       filtered, locations_count
-                FROM runs WHERE user_id = ? ORDER BY id DESC LIMIT 8
-                """,
-                (user_id,),
-            ).fetchall()
-        ]
+        recent_runs = []
+        for row in conn.execute(
+            """
+            SELECT id, keyword, started_at, ended_at, matched, inserted, updated,
+                   filtered, locations_count, filters_json
+            FROM runs WHERE user_id = ? ORDER BY id DESC LIMIT 8
+            """,
+            (user_id,),
+        ).fetchall():
+            run = dict(row)
+            raw_filters = run.pop("filters_json", None)
+            try:
+                stored = json.loads(raw_filters) if raw_filters else {}
+            except json.JSONDecodeError:
+                stored = {}
+            run_source = (stored.get("source") if isinstance(stored, dict) else "") or "indeed"
+            run["source"] = normalize_scan_source(run_source)
+            run["label"] = scan_label(run.get("keyword") or "", run["source"])
+            recent_runs.append(run)
         loc_counts = conn.execute(
             """
             SELECT
@@ -2969,7 +3096,8 @@ def get_insights(user_id: int, keyword: str | None = None, db_path: Path | None 
     keyword_rows = list_keywords(user_id, db_path)
     overlap_rows = [
         {
-            "label": r["keyword"],
+            "label": r["label"],
+            "value": r["value"],
             "n": r["n"],
             "overlap": r["overlap"] or 0,
             "pct": round(100 * (r["overlap"] or 0) / r["n"], 1) if r["n"] else 0.0,
@@ -2979,6 +3107,8 @@ def get_insights(user_id: int, keyword: str | None = None, db_path: Path | None 
 
     result = {
         "keyword": keyword,
+        "scan": encode_scan(scan_source, keyword) if keyword and scan_source else keyword,
+        "scan_label": scan_label(keyword, scan_source) if keyword and scan_source else keyword,
         "total": total,
         "remote": remote,
         "remote_pct": share(remote),
@@ -3005,7 +3135,8 @@ def get_insights(user_id: int, keyword: str | None = None, db_path: Path | None 
         "industry_unspecified_pct": share(unspecified_industry),
         "statuses": status_rows,
         "keywords": _with_pct(
-            [{"label": k["keyword"], "n": k["n"]} for k in keyword_rows], job_count or 1
+            [{"label": k["label"], "value": k["value"], "n": k["n"]} for k in keyword_rows],
+            job_count or 1,
         ),
         "keyword_overlap": overlap_rows,
         "recent_runs": recent_runs,
@@ -3118,53 +3249,86 @@ def delete_job(user_id: int, job_id: int, db_path: Path | None = None) -> None:
     _invalidate_caches()
 
 
-def delete_jobs_for_keyword(user_id: int, keyword: str, db_path: Path | None = None) -> dict[str, Any]:
-    """Remove this user's link to postings found only by `keyword`.
+def delete_jobs_for_keyword(
+    user_id: int,
+    keyword: str,
+    db_path: Path | None = None,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Remove this user's link to postings found only by this scan.
 
     Postings that also appear in another of the user's scans stay. Postings no
-    user is linked to any more are deleted outright.
+    user is linked to any more are deleted outright. `source` limits the delete
+    to one board (Indeed, SpaceX, Amazon, IBM).
     """
+    if source is None and "|" in (keyword or ""):
+        source, keyword = decode_scan(keyword)
     keyword = (keyword or "").strip()
     if not keyword:
         raise ValueError("Keyword is required")
+    scan_source = normalize_scan_source(source) if source else ""
     init_db(db_path)
+    source_sql = " AND source = ?" if scan_source else ""
     with connect(db_path) as conn:
+        kept_args: list[Any] = [user_id, keyword]
+        if scan_source:
+            kept_args.append(scan_source)
+        kept_args.extend([user_id, keyword])
+        if scan_source:
+            kept_args.append(scan_source)
+        other = (
+            "NOT (keyword = ? COLLATE NOCASE" + source_sql + ")"
+            if scan_source
+            else "keyword <> ? COLLATE NOCASE"
+        )
         kept = conn.execute(
-            """
+            f"""
             SELECT COUNT(*)
             FROM job_keywords
-            WHERE user_id = ? AND keyword = ? COLLATE NOCASE
+            WHERE user_id = ? AND keyword = ? COLLATE NOCASE{source_sql}
               AND job_id IN (
                   SELECT job_id FROM job_keywords
-                  WHERE user_id = ? AND keyword <> ? COLLATE NOCASE
+                  WHERE user_id = ? AND {other}
               )
             """,
-            (user_id, keyword, user_id, keyword),
+            kept_args,
         ).fetchone()[0]
+        delete_args: list[Any] = [user_id, user_id, keyword]
+        if scan_source:
+            delete_args.append(scan_source)
+        delete_args.extend([user_id, keyword])
+        if scan_source:
+            delete_args.append(scan_source)
         cur = conn.execute(
-            """
+            f"""
             DELETE FROM user_jobs
             WHERE user_id = ?
               AND job_id IN (
                   SELECT job_id FROM job_keywords
-                  WHERE user_id = ? AND keyword = ? COLLATE NOCASE
+                  WHERE user_id = ? AND keyword = ? COLLATE NOCASE{source_sql}
               )
               AND job_id NOT IN (
                   SELECT job_id FROM job_keywords
-                  WHERE user_id = ? AND keyword <> ? COLLATE NOCASE
+                  WHERE user_id = ? AND {other}
               )
             """,
-            (user_id, user_id, keyword, user_id, keyword),
+            delete_args,
         )
         deleted = cur.rowcount
         conn.execute(
-            "DELETE FROM job_keywords WHERE user_id = ? AND keyword = ? COLLATE NOCASE",
-            (user_id, keyword),
+            f"DELETE FROM job_keywords WHERE user_id = ? AND keyword = ? COLLATE NOCASE{source_sql}",
+            [user_id, keyword] + ([scan_source] if scan_source else []),
         )
         _drop_orphan_jobs(conn)
         conn.commit()
     _invalidate_caches()
-    return {"keyword": keyword, "deleted": deleted, "kept": int(kept or 0)}
+    return {
+        "keyword": keyword,
+        "source": scan_source,
+        "label": scan_label(keyword, scan_source) if scan_source else keyword,
+        "deleted": deleted,
+        "kept": int(kept or 0),
+    }
 
 
 def delete_run(user_id: int, run_id: int, db_path: Path | None = None) -> None:

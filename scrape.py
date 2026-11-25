@@ -110,12 +110,23 @@ class SearchFilters:
     # preferred / required = posting treats the keyword as at least that strong.
     kw_match: str = "any"
     fetch_description: bool = False
-    # indeed = city search. spacex = the SpaceX careers jobs page.
+    # indeed = city search. spacex, amazon, ibm, and the company boards are careers pages.
     source: str = "indeed"
     board_programs: list[str] = field(default_factory=list)
     board_locations: list[str] = field(default_factory=list)
     board_disciplines: list[str] = field(default_factory=list)
     board_url: str = ""
+    # Amazon Jobs board. Categories, teams, and schedules are that page's filters.
+    board_categories: list[str] = field(default_factory=list)
+    board_teams: list[str] = field(default_factory=list)
+    board_schedules: list[str] = field(default_factory=list)
+    board_loc_query: str = ""
+    board_intern: bool = False
+    board_seasonal: bool = False
+    # IBM careers search. Countries, experience levels, and work arrangement.
+    board_countries: list[str] = field(default_factory=list)
+    board_levels: list[str] = field(default_factory=list)
+    board_modes: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -403,6 +414,153 @@ def scrape_spacex_careers(
     return list(collected.values()), stats
 
 
+def scrape_amazon_jobs(
+    filters: SearchFilters,
+    progress: ProgressFn | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """United States openings on amazon.jobs that pass the same keyword rules as Indeed."""
+    from amazon import fetch_openings
+
+    log = progress or (lambda msg: print(msg, flush=True))
+    records, board_stats = fetch_openings(
+        categories=filters.board_categories,
+        locations=filters.board_locations,
+        teams=filters.board_teams,
+        schedules=filters.board_schedules,
+        loc_query=filters.board_loc_query,
+        intern=filters.board_intern,
+        seasonal=filters.board_seasonal,
+        title_include=filters.title_include,
+        title_exclude=filters.title_exclude,
+        keyword=filters.keyword,
+        kw_match=filters.kw_match,
+        progress=log,
+    )
+    pattern = keyword_pattern(filters.keyword)
+    collected: dict[str, dict[str, Any]] = {}
+    seen_keyword: set[str] = set()
+    keyword_hits = 0
+    for rec in records:
+        if not text_matches(haystack(rec), pattern):
+            continue
+        key = job_key(rec)
+        if key not in seen_keyword:
+            seen_keyword.add(key)
+            keyword_hits += 1
+        if not passes_post_filters(rec, filters):
+            continue
+        if key not in collected:
+            rec["_filter_keyword"] = filters.keyword
+            rec["_search_location"] = rec.get("location")
+            rec["_dedupe_key"] = key
+            collected[key] = rec
+    log(
+        f"Amazon Jobs: {board_stats.get('raw_fetched', 0)} rows read, "
+        f"{keyword_hits} mention {filters.keyword!r}, {len(collected)} kept"
+    )
+    stats = {
+        "raw_fetched": board_stats.get("raw_fetched", 0),
+        "keyword_hits": keyword_hits,
+        "matched": len(collected),
+        "errors": list(board_stats.get("errors") or []),
+    }
+    return list(collected.values()), stats
+
+
+def scrape_ibm_jobs(
+    filters: SearchFilters,
+    progress: ProgressFn | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Openings on ibm.com/careers/search that pass the same keyword rules as Indeed."""
+    from ibm import fetch_openings
+
+    log = progress or (lambda msg: print(msg, flush=True))
+    records, board_stats = fetch_openings(
+        categories=filters.board_categories,
+        countries=filters.board_countries,
+        cities=filters.board_locations,
+        levels=filters.board_levels,
+        modes=filters.board_modes,
+        progress=log,
+    )
+    pattern = keyword_pattern(filters.keyword)
+    collected: dict[str, dict[str, Any]] = {}
+    seen_keyword: set[str] = set()
+    keyword_hits = 0
+    for rec in records:
+        if not text_matches(haystack(rec), pattern):
+            continue
+        key = job_key(rec)
+        if key not in seen_keyword:
+            seen_keyword.add(key)
+            keyword_hits += 1
+        if not passes_post_filters(rec, filters):
+            continue
+        if key not in collected:
+            rec["_filter_keyword"] = filters.keyword
+            rec["_search_location"] = rec.get("location")
+            rec["_dedupe_key"] = key
+            collected[key] = rec
+    log(
+        f"IBM careers: {board_stats.get('raw_fetched', 0)} rows read, "
+        f"{keyword_hits} mention {filters.keyword!r}, {len(collected)} kept"
+    )
+    stats = {
+        "raw_fetched": board_stats.get("raw_fetched", 0),
+        "keyword_hits": keyword_hits,
+        "matched": len(collected),
+        "errors": list(board_stats.get("errors") or []),
+    }
+    return list(collected.values()), stats
+
+
+def scrape_company_board(
+    filters: SearchFilters,
+    progress: ProgressFn | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """One company careers page, then the same keyword rules as Indeed."""
+    from boards import fetch_openings
+
+    log = progress or (lambda msg: print(msg, flush=True))
+    records, board_stats = fetch_openings(
+        filters.source,
+        countries=filters.board_countries,
+        categories=filters.board_categories,
+        locations=filters.board_locations,
+        modes=filters.board_modes,
+        progress=log,
+    )
+    pattern = keyword_pattern(filters.keyword)
+    collected: dict[str, dict[str, Any]] = {}
+    seen_keyword: set[str] = set()
+    keyword_hits = 0
+    for rec in records:
+        if not text_matches(haystack(rec), pattern):
+            continue
+        key = job_key(rec)
+        if key not in seen_keyword:
+            seen_keyword.add(key)
+            keyword_hits += 1
+        if not passes_post_filters(rec, filters):
+            continue
+        if key not in collected:
+            rec["_filter_keyword"] = filters.keyword
+            rec["_search_location"] = rec.get("location")
+            rec["_dedupe_key"] = key
+            collected[key] = rec
+    log(
+        f"{filters.source} careers: {board_stats.get('raw_fetched', 0)} rows read, "
+        f"{keyword_hits} mention {filters.keyword!r}, {len(collected)} kept"
+    )
+    stats = {
+        "raw_fetched": board_stats.get("raw_fetched", 0),
+        "keyword_hits": keyword_hits,
+        "matched": len(collected),
+        "errors": list(board_stats.get("errors") or []),
+    }
+    return list(collected.values()), stats
+
+
 def scrape_all_for_keyword(
     keyword: str,
     locations: list[str],
@@ -551,12 +709,12 @@ def run_scrape(
     init_db()
     uid = user_id if user_id is not None else local_user_id()
     source = (filters.source or "indeed").strip().lower()
-    if source != "spacex":
+    if source in {"spacex", "amazon", "ibm", "oracle", "hpe", "verizon", "dell", "cisco", "tesla", "walmart", "unitedhealth", "wellsfargo", "spectrum"}:
+        locations = []
+    else:
         locations = locations if locations is not None else get_enabled_locations(uid)
         if not locations:
             raise RuntimeError(f"No enabled locations for user {uid} in {DB_PATH}")
-    else:
-        locations = []
 
     started = datetime.now(timezone.utc)
     run_id = start_run(uid, filters.keyword, len(locations), filters.as_dict())
@@ -564,6 +722,15 @@ def run_scrape(
     if source == "spacex":
         log("source: SpaceX careers jobs page")
         jobs, stats = scrape_spacex_careers(filters, progress=log)
+    elif source == "amazon":
+        log("source: Amazon Jobs, United States")
+        jobs, stats = scrape_amazon_jobs(filters, progress=log)
+    elif source == "ibm":
+        log("source: IBM careers search")
+        jobs, stats = scrape_ibm_jobs(filters, progress=log)
+    elif source in {"oracle", "hpe", "verizon", "dell", "cisco", "tesla", "walmart", "unitedhealth", "wellsfargo", "spectrum"}:
+        log(f"source: {source} careers search")
+        jobs, stats = scrape_company_board(filters, progress=log)
     else:
         log(f"locations: {len(locations)} enabled in {DB_PATH}")
         jobs, stats = scrape_all_for_keyword(
@@ -574,7 +741,7 @@ def run_scrape(
 
     if jobs:
         log(f"Saving {len(jobs)} jobs to database...")
-    db_counts = upsert_jobs(uid, jobs, filters.keyword) if jobs else {"inserted": 0, "updated": 0}
+    db_counts = upsert_jobs(uid, jobs, filters.keyword, source=filters.source) if jobs else {"inserted": 0, "updated": 0}
     finish_run(
         run_id,
         raw_fetched=stats["raw_fetched"],

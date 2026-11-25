@@ -1,0 +1,359 @@
+{
+  "categories": [
+    "Operations, IT, & Support Engineering",
+    "Software Development",
+    "Project/Program/Product Management--Technical",
+    "Fulfillment & Operations Management",
+    "Hardware Development",
+    "Systems, Quality, & Security Engineering",
+    "Corporate Operations",
+    "Project/Program/Product Management--Non-Tech",
+    "Facilities, Maintenance, & Real Estate",
+    "Finance & Accounting",
+    "Medical, Health, & Safety",
+    "Solutions Architect",
+    "Applied Science",
+    "Human Resources",
+    "Supply Chain/Transportation Management",
+    "Sales, Advertising, & Account Management",
+    "Design",
+    "Administrative Support",
+    "Fulfillment Associate",
+    "Business & Merchant Development",
+    "Marketing & PR",
+    "Investigation & Loss Prevention",
+    "Buying, Planning, & Instock Management",
+    "Fulfillment / Warehouse Associate",
+    "Legal",
+    "Customer Service",
+    "Business Intelligence",
+    "Data Science",
+    "Research Science",
+    "Procurement",
+    "Economics",
+    "PR",
+    "Public Policy",
+    "Leadership Development & Training",
+    "Database Administration",
+    "Editorial, Writing, & Content Management",
+    "Audio / Video / Photography Production"
+  ],
+  "teams": [
+    {
+      "id": "aws",
+      "label": "Amazon Web Services"
+    },
+    {
+      "id": "alexa-and-amazon-devices",
+      "label": "Alexa and Amazon Devices"
+    },
+    {
+      "id": "fulfillment-and-operations",
+      "label": "Amazon Operations"
+    },
+    {
+      "id": "fulfillment-ops",
+      "label": "Fulfillment Ops"
+    },
+    {
+      "id": "operations",
+      "label": "Operations"
+    },
+    {
+      "id": "finance",
+      "label": "Finance and Global Business Services"
+    },
+    {
+      "id": "no-business-category",
+      "label": "No team listed"
+    },
+    {
+      "id": "transportation-and-logistics",
+      "label": "Transportation, Shipping & Logistics"
+    },
+    {
+      "id": "subsidiaries",
+      "label": "Subsidiaries"
+    },
+    {
+      "id": "amazon-security",
+      "label": "Amazon Security"
+    },
+    {
+      "id": "pxt",
+      "label": "People Experience and Technology"
+    },
+    {
+      "id": "advertising",
+      "label": "Amazon Ads"
+    },
+    {
+      "id": "retail",
+      "label": "North America Stores"
+    },
+    {
+      "id": "annapurna",
+      "label": "Annapurna"
+    },
+    {
+      "id": "entertainment",
+      "label": "Amazon Entertainment"
+    },
+    {
+      "id": "healthcare",
+      "label": "Amazon Health Services"
+    },
+    {
+      "id": "selling-partner-services",
+      "label": "Selling Partner Services"
+    },
+    {
+      "id": "ecp",
+      "label": "eCommerce Foundation"
+    },
+    {
+      "id": "fulfillment-ops-team",
+      "label": "Fulfillment Ops Team"
+    },
+    {
+      "id": "fulfillment-technology-and-robotics",
+      "label": "Fulfillment Technology And Robotics"
+    },
+    {
+      "id": "studentprograms",
+      "label": "Studentprograms"
+    },
+    {
+      "id": "legal",
+      "label": "Legal"
+    },
+    {
+      "id": "worldwide-grocery-stores",
+      "label": "Worldwide Grocery Stores"
+    },
+    {
+      "id": "north-america-stores",
+      "label": "North America Stores"
+    },
+    {
+      "id": "transportation-shipping-logistics",
+      "label": "Transportation Shipping Logistics"
+    },
+    {
+      "id": "amazon-customer-service",
+      "label": "Amazon Customer Service"
+    },
+    {
+      "id": "customer-service",
+      "label": "Customer Service"
+    },
+    {
+      "id": "ats",
+      "label": "Ats"
+    },
+    {
+      "id": "amazon-artificial-general-intelligence",
+      "label": "Amazon Artificial General Intelligence (AGI)"
+    },
+    {
+      "id": "amazon-business",
+      "label": "Amazon Business"
+    },
+    {
+      "id": "consumer_engagement",
+      "label": "Consumer_Engagement"
+    },
+    {
+      "id": "global-communications-and-community-impact",
+      "label": "Communications and Corporate Responsibility"
+    },
+    {
+      "id": "international-stores",
+      "label": "International Stores"
+    },
+    {
+      "id": "business-and-corporate-development",
+      "label": "Business & Corporate Development"
+    },
+    {
+      "id": "customer-trust-and-partner-support",
+      "label": "Customer Trust And Partner Support"
+    },
+    {
+      "id": "public-relations-and-public-policy",
+      "label": "Public Relations And Public Policy"
+    },
+    {
+      "id": "kindlecontent",
+      "label": "Kindlecontent"
+    },
+    {
+      "id": "global-corporate",
+      "label": "Global Corporate"
+    },
+    {
+      "id": "cross-channel-cross-category-marketing",
+      "label": "Cross Channel Cross Category Marketing"
+    },
+    {
+      "id": "cx-and-business-trends",
+      "label": "Customer Experience and Business Trends"
+    },
+    {
+      "id": "pharmacy",
+      "label": "Pharmacy"
+    },
+    {
+      "id": "amazonfresh",
+      "label": "Amazonfresh"
+    },
+    {
+      "id": "core-ai",
+      "label": "Core Ai"
+    },
+    {
+      "id": "seller-services",
+      "label": "Selling Partner Services"
+    },
+    {
+      "id": "amazongo",
+      "label": "Amazongo"
+    },
+    {
+      "id": "na-stores",
+      "label": "Na Stores"
+    },
+    {
+      "id": "amazondiagnostics",
+      "label": "Amazondiagnostics"
+    },
+    {
+      "id": "amazonian-experience-and-tech",
+      "label": "Amazonian Experience and Technology"
+    },
+    {
+      "id": "corporate",
+      "label": "Corporate"
+    },
+    {
+      "id": "devices",
+      "label": "Devices"
+    },
+    {
+      "id": "gca",
+      "label": "Gca"
+    },
+    {
+      "id": "university",
+      "label": "University"
+    }
+  ],
+  "schedules": [
+    "Full-Time",
+    "Reduced-Time (30-39 hours)",
+    "Part-Time (20-29 hours)",
+    "Flex-Time (<19 hours)"
+  ],
+  "locations": [
+    "Seattle, Washington, USA",
+    "Arlington, Virginia, USA",
+    "New York, New York, USA",
+    "Austin, Texas, USA",
+    "Bellevue, Washington, USA",
+    "Herndon, Virginia, USA",
+    "Nashville, Tennessee, USA",
+    "Redmond, Washington, USA",
+    "San Francisco, California, USA",
+    "Dallas, Texas, USA",
+    "Boston, Massachusetts, USA",
+    "Atlanta, Georgia, USA",
+    "Chicago, Illinois, USA",
+    "Denver, Colorado, USA",
+    "Cupertino, California, USA",
+    "Sunnyvale, California, USA",
+    "Santa Clara, California, USA",
+    "Boardman, Oregon, USA",
+    "San Diego, California, USA",
+    "North Reading, Massachusetts, USA",
+    "Culver City, California, USA",
+    "Houston, Texas, USA",
+    "Jeffersonville, Ohio, USA",
+    "Hermiston, Oregon, USA",
+    "Santa Monica, California, USA",
+    "Irving, Texas, USA",
+    "Canton, Mississippi, USA",
+    "Tempe, Arizona, USA",
+    "Floydada, Texas, USA",
+    "Umatilla, Oregon, USA",
+    "New Albany, Ohio, USA",
+    "Westborough, Massachusetts, USA",
+    "Wink, Texas, USA",
+    "Columbus, Ohio, USA",
+    "Jersey City, New Jersey, USA",
+    "Jessup, Maryland, USA",
+    "Irvine, California, USA",
+    "Mountain View, California, USA",
+    "East Palo Alto, California, USA",
+    "Sterling, Virginia, USA",
+    "Sparks, Nevada, USA",
+    "Andrews, Texas, USA",
+    "Portland, Oregon, USA",
+    "Mesa, Arizona, USA",
+    "Avondale, Arizona, USA",
+    "Berwick, Pennsylvania, USA",
+    "Manassas, Virginia, USA",
+    "Wharton, Texas, USA",
+    "Phoenix, Arizona, USA",
+    "Aurora, Colorado, USA",
+    "Coyanosa, Texas, USA",
+    "New Carlisle, Indiana, USA",
+    "Fairless Hills, Pennsylvania, USA",
+    "Northridge, California, USA",
+    "Clifton, Texas, USA",
+    "Palo Alto, California, USA",
+    "Frederick, Maryland, USA",
+    "Kirkland, Washington, USA",
+    "Fredericksburg, Virginia, USA",
+    "Minneapolis, Minnesota, USA",
+    "Pecos, Texas, USA",
+    "Detroit, Michigan, USA",
+    "USA",
+    "Hebron, Kentucky, USA",
+    "Lithia Springs, Georgia, USA",
+    "Miami, Florida, USA",
+    "Charlotte, North Carolina, USA",
+    "Hamlet, North Carolina, USA",
+    "Kent, Washington, USA",
+    "Cincinnati, Ohio, USA",
+    "Ashburn, Virginia, USA",
+    "Raleigh, North Carolina, USA",
+    "Chantilly, Virginia, USA",
+    "Lubbock, Texas, USA",
+    "San Antonio, Texas, USA",
+    "Tracy, California, USA",
+    "Hawthorne, California, USA",
+    "Hilliard, Ohio, USA",
+    "Mt Juliet, Tennessee, USA",
+    "San Bernardino, California, USA",
+    "Covington, Georgia, USA",
+    "Newark, New Jersey, USA",
+    "Culpeper, Virginia, USA",
+    "Pasadena, California, USA",
+    "Fort Worth, Texas, USA",
+    "Louisa, Virginia, USA",
+    "Goodyear, Arizona, USA",
+    "Plain City, Ohio, USA",
+    "Ridgeland, Mississippi, USA",
+    "Tampa, Florida, USA",
+    "Florence, Kentucky, USA",
+    "Fort Wayne, Indiana, USA",
+    "Oklahoma City, Oklahoma, USA",
+    "Shreveport, Louisiana, USA",
+    "Memphis, Tennessee, USA",
+    "Caledonia, Michigan, USA",
+    "Jacksonville, Florida, USA",
+    "El Segundo, California, USA",
+    "Erlanger, Kentucky, USA",
+    "St Louis, Missouri, USA"
+  ]
+}

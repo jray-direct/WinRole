@@ -96,7 +96,7 @@
 </form>
 
 <dl class="facts">
-  <div><dt>Keywords</dt><dd>{{ job.keywords | join(', ') or "—" }}</dd></div>
+  <div><dt>Scans</dt><dd>{{ (job.scan_labels or job.keywords) | join(', ') or "—" }}</dd></div>
   <div><dt>Industry</dt><dd>{{ job.company_industry or "—" }}</dd></div>
   <div><dt>Company size</dt><dd>{{ job.company_num_employees or "—" }}</dd></div>
   <div><dt>First seen</dt><dd>{{ job.first_seen_at }}</dd></div>

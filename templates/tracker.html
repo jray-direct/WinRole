@@ -67,8 +67,8 @@
     <select name="keyword" class="form-select">
       <option value="">Any scan</option>
       {% for k in keywords %}
-      <option value="{{ k.keyword }}" {% if filters.keyword == k.keyword %}selected{% endif %}>
-        {{ k.keyword }} ({{ k.n }})
+      <option value="{{ k.value }}" {% if filters.scan == k.value %}selected{% endif %}>
+        {{ k.label }} ({{ k.n }})
       </option>
       {% endfor %}
     </select>

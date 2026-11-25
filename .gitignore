@@ -27,6 +27,9 @@ _scratch/
 *.json
 !requirements.txt
 !spacex_filters.json
+!amazon_filters.json
+!ibm_filters.json
+!company_filters.json
 
 # OS / editor
 .DS_Store
