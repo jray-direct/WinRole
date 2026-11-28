@@ -269,7 +269,7 @@ _INSIGHTS_CACHE: dict[str, dict[str, Any]] = {}
 _RESUME_PROFILE_CACHE: dict[str, ResumeProfile] = {}
 REPAIR_VERSION = 2
 # Bump when the years parser or text enrichment changes; init_db re-runs it once.
-ENRICH_VERSION = 5
+ENRICH_VERSION = 7
 # Bump when default locations migrate from cities to states organized by region.
 LOCATIONS_STATE_VERSION = 6
 
@@ -453,6 +453,7 @@ def init_db(db_path: Path | None = None) -> Path:
             conn.execute(f"PRAGMA user_version = {target_version}")
             conn.commit()
             _invalidate_caches()
+        _ensure_hot_indexes(conn)
         _INIT_PATHS.add(key)
     return path
 
@@ -512,6 +513,17 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_filter_templates_kind ON filter_templates(kind)")
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS scan_names (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            keyword TEXT NOT NULL COLLATE NOCASE,
+            source TEXT NOT NULL,
+            name TEXT NOT NULL,
+            PRIMARY KEY (user_id, keyword, source)
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS job_heat_scores (
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -547,6 +559,17 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+
+
+def _ensure_hot_indexes(conn: sqlite3.Connection) -> None:
+    """Indexes for the lookups the Jobs page and scan delete run on every request."""
+    if "job_id" in _table_cols(conn, "user_jobs"):
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_user_jobs_job ON user_jobs(job_id)")
+    kw = _table_cols(conn, "job_keywords")
+    if "user_id" in kw and "keyword" in kw:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_job_keywords_user_kw ON job_keywords(user_id, keyword)"
+        )
 
 
 def _table_cols(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -868,6 +891,31 @@ def scan_label(keyword: str, source: str | None) -> str:
     """How a saved scan is named: the keyword, then the board it was run on."""
     name = SCAN_SOURCES.get(normalize_scan_source(source), "Indeed")
     return f"{keyword} · {name}"
+
+
+def scan_display_label(keyword: str, source: str | None, name: str | None = None) -> str:
+    """Scan list label. A saved name replaces the keyword; the board stays."""
+    title = (name or "").strip() or keyword
+    board = SCAN_SOURCES.get(normalize_scan_source(source), "Indeed")
+    return f"{title} · {board}"
+
+
+def _scan_name_map(conn: sqlite3.Connection, user_id: int) -> dict[tuple[str, str], str]:
+    rows = conn.execute(
+        "SELECT keyword, source, name FROM scan_names WHERE user_id = ?",
+        (user_id,),
+    ).fetchall()
+    return {
+        (row["keyword"].casefold(), normalize_scan_source(row["source"])): row["name"]
+        for row in rows
+    }
+
+
+def _named_label(keyword: str, source: str | None, names: dict[tuple[str, str], str]) -> str:
+    if not source:
+        return keyword
+    source_key = normalize_scan_source(source)
+    return scan_display_label(keyword, source_key, names.get((keyword.casefold(), source_key), ""))
 
 
 def encode_scan(source: str | None, keyword: str) -> str:
@@ -1771,7 +1819,8 @@ def get_job(user_id: int, job_id: int, db_path: Path | None = None) -> dict[str,
             (user_id, job_id),
         ).fetchall()
         job["keywords"] = [k["keyword"] for k in kws]
-        job["scan_labels"] = [scan_label(k["keyword"], k["source"]) for k in kws]
+        names = _scan_name_map(conn, user_id)
+        job["scan_labels"] = [_named_label(k["keyword"], k["source"], names) for k in kws]
         job["pay_label"] = format_pay(job)
         job["pay_estimated"] = job.get("salary_source") == "estimate"
         job["pay_hint"] = pay_hint(job)
@@ -1883,12 +1932,9 @@ def _material_row(conn: sqlite3.Connection, user_id: int, material_id: Any) -> d
 
 
 def _resolve_material_path(stored: str | None) -> Path | None:
-    if not stored:
-        return None
-    path = Path(stored)
-    if not path.is_absolute():
-        path = Path(__file__).resolve().parent / path
-    return path if path.is_file() else None
+    from storage import resolve_stored
+
+    return resolve_stored(stored)
 
 
 def _material_text(mat: dict[str, Any], *, persist: bool = False, db_path: Path | None = None) -> str:
@@ -1901,7 +1947,10 @@ def _material_text(mat: dict[str, Any], *, persist: bool = False, db_path: Path 
         return body
     path = _resolve_material_path(mat.get("path"))
     if path is None:
-        mat["extract_note"] = "The uploaded file is missing on disk."
+        if str(mat.get("path") or "").startswith("s3://"):
+            mat["extract_note"] = "The file is in S3 but could not be downloaded."
+        else:
+            mat["extract_note"] = "The uploaded file is missing on disk."
         return ""
     text, note = extract_resume_detail(path)
     text = text.strip()
@@ -1958,12 +2007,16 @@ def _ensure_job_descriptions(
     missing = [row["id"] for row in rows if "description" not in row]
     if not missing:
         return
-    placeholders = ",".join("?" * len(missing))
+    desc_rows: list[sqlite3.Row] = []
     with connect(db_path) as conn:
-        desc_rows = conn.execute(
-            f"SELECT id, description FROM jobs WHERE id IN ({placeholders})",
-            missing,
-        ).fetchall()
+        for chunk in _id_chunks(missing):
+            placeholders = ",".join("?" * len(chunk))
+            desc_rows.extend(
+                conn.execute(
+                    f"SELECT id, description FROM jobs WHERE id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+            )
     by_id = {r["id"]: (r["description"] or "") for r in desc_rows}
     for row in rows:
         if "description" not in row:
@@ -1977,10 +2030,24 @@ HEAT_SCORE_INLINE_LIMIT = 80
 _heat_guard = threading.Lock()
 _heat_active: set[tuple[int, str, str]] = set()
 _heat_threads: dict[tuple[int, str, str], threading.Thread] = {}
+_heat_cancel: set[tuple[int, str, str]] = set()
 
 
 def _heat_key(user_id: int, sig: str, db_path: Path | None) -> tuple[int, str, str]:
     return (user_id, sig, str(db_path) if db_path else "")
+
+
+def _heat_stopped(key: tuple[int, str, str]) -> bool:
+    with _heat_guard:
+        return key in _heat_cancel
+
+
+def cancel_heat_scores(user_id: int) -> None:
+    """Stop this user's background rescore so a delete is not waiting on score writes."""
+    with _heat_guard:
+        for key in _heat_active:
+            if key[0] == user_id:
+                _heat_cancel.add(key)
 
 
 def heat_scores_pending(user_id: int | None = None) -> bool:
@@ -2066,12 +2133,17 @@ def _score_heat_rows(
         )
     if not upserts:
         return
+    # Insert from the jobs row itself. A scan delete can remove the posting
+    # while this batch is scoring, and a plain INSERT then fails the job_id
+    # foreign key and kills the rest of the rescore.
     with connect(db_path) as conn:
         conn.executemany(
             """
             INSERT INTO job_heat_scores
                 (user_id, job_id, resume_sig, score, tier, tooltip, details_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            SELECT ?, j.id, ?, ?, ?, ?, ?
+            FROM jobs j
+            WHERE j.id = ?
             ON CONFLICT(user_id, job_id) DO UPDATE SET
                 resume_sig = excluded.resume_sig,
                 score = excluded.score,
@@ -2079,9 +2151,44 @@ def _score_heat_rows(
                 tooltip = excluded.tooltip,
                 details_json = excluded.details_json
             """,
-            upserts,
+            [
+                (user_id, sig, score, tier, tooltip, details, job_id)
+                for user_id, job_id, sig, score, tier, tooltip, details in upserts
+            ],
         )
         conn.commit()
+
+
+def _id_chunks(ids: list[int], size: int = 400) -> list[list[int]]:
+    """Stay under SQLite's bound-variable cap. One placeholder per id blows that cap."""
+    return [ids[start : start + size] for start in range(0, len(ids), size)]
+
+
+def _next_unscored_ids(
+    user_id: int,
+    sig: str,
+    where: str,
+    args: list[Any],
+    after_id: int,
+    limit: int,
+    db_path: Path | None,
+) -> list[int]:
+    """Next unscored postings in this list. The Jobs page does not load every id first."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT j.id
+            FROM jobs j
+            JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ?
+            LEFT JOIN job_heat_scores hs
+              ON hs.user_id = ? AND hs.job_id = j.id AND hs.resume_sig = ?
+            WHERE {where} AND j.id > ? AND hs.job_id IS NULL
+            ORDER BY j.id
+            LIMIT ?
+            """,
+            [user_id, user_id, sig, *args, after_id, limit],
+        ).fetchall()
+    return [int(row[0]) for row in rows]
 
 
 def _heat_refresh_worker(
@@ -2091,18 +2198,51 @@ def _heat_refresh_worker(
     job_ids: list[int],
     db_path: Path | None,
     key: tuple[int, str, str],
+    unscored_where: str | None = None,
+    unscored_args: list[Any] | None = None,
 ) -> None:
     sig = key[1]
     try:
         step = 40
+        if unscored_where:
+            last_id = 0
+            while True:
+                if _heat_stopped(key):
+                    return
+                fresh = get_user_resume_profile(user_id, None, db_path)
+                if fresh is None or heat_cache_sig(fresh) != sig:
+                    return
+                try:
+                    batch = _next_unscored_ids(
+                        user_id, sig, unscored_where, unscored_args or [], last_id, step, db_path
+                    )
+                except sqlite3.Error:
+                    return
+                if not batch:
+                    return
+                last_id = batch[-1]
+                try:
+                    rows = _jobs_for_heat(batch, db_path)
+                    _score_heat_rows(user_id, rows, fresh, keyword, db_path, ignore_errors=True)
+                except sqlite3.Error:
+                    continue
+            return
         for start in range(0, len(job_ids), step):
+            if _heat_stopped(key):
+                return
             fresh = get_user_resume_profile(user_id, None, db_path)
             if fresh is None or heat_cache_sig(fresh) != sig:
                 return
-            rows = _jobs_for_heat(job_ids[start : start + step], db_path)
-            _score_heat_rows(user_id, rows, fresh, keyword, db_path, ignore_errors=True)
+            try:
+                rows = _jobs_for_heat(job_ids[start : start + step], db_path)
+                _score_heat_rows(user_id, rows, fresh, keyword, db_path, ignore_errors=True)
+            except sqlite3.Error:
+                # This batch's postings may have been deleted, or the write was
+                # busy. Later batches still need their scores.
+                continue
     finally:
         with _heat_guard:
+            _heat_cancel.discard(key)
             _heat_active.discard(key)
             _heat_threads.pop(key, None)
 
@@ -2111,10 +2251,13 @@ def _schedule_heat_refresh(
     user_id: int,
     resume: ResumeProfile,
     keyword: str,
-    job_ids: list[int],
-    db_path: Path | None,
+    job_ids: list[int] | None = None,
+    db_path: Path | None = None,
+    *,
+    unscored_where: str | None = None,
+    unscored_args: list[Any] | None = None,
 ) -> None:
-    if not job_ids:
+    if not job_ids and not unscored_where:
         return
     key = _heat_key(user_id, heat_cache_sig(resume), db_path)
     with _heat_guard:
@@ -2122,7 +2265,16 @@ def _schedule_heat_refresh(
             return
         thread = threading.Thread(
             target=_heat_refresh_worker,
-            args=(user_id, resume, keyword, list(job_ids), db_path, key),
+            args=(
+                user_id,
+                resume,
+                keyword,
+                list(job_ids or []),
+                db_path,
+                key,
+                unscored_where,
+                list(unscored_args or []),
+            ),
             name="heat-scores",
             daemon=True,
         )
@@ -2147,16 +2299,20 @@ def _apply_resume_heat_scores(
     if not rows:
         return False
     ids = [row["id"] for row in rows]
-    placeholders = ",".join("?" * len(ids))
+    cached_rows: list[sqlite3.Row] = []
     with connect(db_path) as conn:
-        cached_rows = conn.execute(
-            f"""
-            SELECT job_id, resume_sig, score, tier, tooltip, details_json
-            FROM job_heat_scores
-            WHERE user_id = ? AND job_id IN ({placeholders})
-            """,
-            [user_id, *ids],
-        ).fetchall()
+        for chunk in _id_chunks(ids):
+            placeholders = ",".join("?" * len(chunk))
+            cached_rows.extend(
+                conn.execute(
+                    f"""
+                    SELECT job_id, resume_sig, score, tier, tooltip, details_json
+                    FROM job_heat_scores
+                    WHERE user_id = ? AND job_id IN ({placeholders})
+                    """,
+                    [user_id, *chunk],
+                ).fetchall()
+            )
     cached = {r["job_id"]: dict(r) for r in cached_rows}
 
     sig = heat_cache_sig(resume)
@@ -2548,6 +2704,129 @@ class JobPage(list):
     scores_pending: bool = False
 
 
+_HEAT_JOIN = (
+    "LEFT JOIN job_heat_scores hs "
+    "ON hs.user_id = ? AND hs.job_id = j.id AND hs.resume_sig = ?"
+)
+
+
+def _list_order_sql(order: str, *, scored: bool) -> str:
+    """ORDER BY for one page. Score sort uses the joined cache, not a Python pass."""
+    if order == "pay":
+        return (
+            "CASE WHEN j.salary_annual_min IS NULL THEN 1 ELSE 0 END, "
+            "j.salary_annual_min DESC, j.id DESC"
+        )
+    if order == "company":
+        return "LOWER(IFNULL(j.company, '')) ASC, j.id DESC"
+    if order == "seen":
+        return (
+            "CASE WHEN IFNULL(j.first_seen_at, '') = '' THEN 1 ELSE 0 END, "
+            "j.first_seen_at DESC, j.id DESC"
+        )
+    if order == "follow_up":
+        return "IFNULL(uj.follow_up_on, '9999-99-99') ASC, IFNULL(uj.applied_on, '') ASC, j.id DESC"
+    if order == "applied":
+        return (
+            "CASE WHEN IFNULL(uj.applied_on, '') = '' THEN 1 ELSE 0 END, "
+            "uj.applied_on DESC, j.id DESC"
+        )
+    if order == "score" and scored:
+        return "CASE WHEN hs.score IS NULL THEN 1 ELSE 0 END, hs.score DESC, j.id DESC"
+    return (
+        "CASE WHEN IFNULL(j.date_posted, '') = '' THEN 1 ELSE 0 END, "
+        "j.date_posted DESC, j.id DESC"
+    )
+
+
+def _list_columns(
+    user_id: int,
+    keyword: str,
+    scan_source: str,
+    *,
+    heat: bool,
+    descriptions: bool,
+) -> tuple[str, list[Any]]:
+    cols = _LIST_COLS + (", j.description" if descriptions else "")
+    select_args: list[Any] = []
+    if keyword:
+        source_sql = " AND jk.source = ?" if scan_source else ""
+        cols += (
+            ", (SELECT jk.stance FROM job_keywords jk WHERE jk.user_id = ? "
+            "AND jk.job_id = j.id AND jk.keyword = ? COLLATE NOCASE"
+            f"{source_sql}) AS kw_stance"
+        )
+        select_args.extend([user_id, keyword])
+        if scan_source:
+            select_args.append(scan_source)
+    if heat:
+        cols += (
+            ", hs.score AS score, hs.tier AS heat_tier, hs.tooltip AS score_tip, "
+            "hs.details_json AS score_details_json"
+        )
+    return cols, select_args
+
+
+def _apply_joined_score(row: dict[str, Any], *, pending: bool) -> None:
+    raw_json = row.pop("score_details_json", None)
+    if isinstance(row.get("score_details"), dict) and row.get("score") is not None:
+        row["score"] = float(row["score"])
+        row["score_pending"] = False
+        return
+    if row.get("score") is not None:
+        row["score"] = float(row["score"])
+        row["score_tip"] = row.get("score_tip") or ""
+        row["heat_tier"] = row.get("heat_tier") or heat_tier(float(row["score"]))
+        row["score_details"] = _json_dict(raw_json)
+        row["score_pending"] = False
+        return
+    if pending:
+        _mark_score_pending(row)
+    else:
+        row["score_details"] = {}
+
+
+def _label_job_row(row: dict[str, Any], *, today: str) -> None:
+    row["pay_label"] = format_pay(row)
+    row["pay_estimated"] = row.get("salary_source") == "estimate"
+    row["pay_hint"] = pay_hint(row)
+    row["years_chips"] = years_chips(row.get("years_min"), row.get("years_max"), row.get("years_pref"))
+    row["certs"] = list(_json_dict(row.get("cert_stances")))
+    stance = row.get("kw_stance") or ""
+    row["kw_stance_label"] = {
+        "required": "Required",
+        "preferred": "Preferred",
+        "equivalent": "Equivalent",
+        "mentioned": "Mentioned",
+    }.get(stance, "")
+    row["clearance"] = row.get("clearance") or "unspecified"
+    row["clearance_label"] = CLEARANCE_LABELS.get(row["clearance"], row["clearance"])
+    row["status_label"] = STATUS_LABELS.get(row.get("status") or "", row.get("status") or "")
+    row["heard_back"] = row.get("heard_back") or "none"
+    row["heard_back_label"] = HEARD_BACK_LABELS.get(row["heard_back"], row["heard_back"])
+    follow = row.get("follow_up_on") or ""
+    row["overdue"] = bool(
+        follow
+        and follow < today
+        and (row.get("status") or "") not in ("rejected", "ignored", "accepted", "withdrawn", "ghosted")
+    )
+    row.pop("description", None)
+    row.pop("score_details_json", None)
+
+
+def _profile_scores(rows: list[dict[str, Any]], keyword: str, profile: Any) -> None:
+    for row in rows:
+        row["score"], parts = score_job(row, keyword, profile)
+        tip = score_tooltip(parts)
+        row["score_tip"] = (
+            "No resume uploaded — using profile fit score.\n"
+            "Upload a default resume for a Heat Score based on degree, "
+            "languages, certifications, skills, and experience.\n"
+            + tip
+        )
+        row["heat_tier"] = heat_tier(float(row["score"] or 0))
+
+
 def query_jobs(
     user_id: int,
     filters: dict[str, Any] | None = None,
@@ -2569,106 +2848,185 @@ def query_jobs(
     title_include = parse_phrases(filters.get("title_include"))
     title_exclude = parse_phrases(filters.get("title_exclude"))
     order = filters.get("order") or "score"
-    cols = _LIST_COLS + (", j.description" if exclude else "")
-    select_args: list[Any] = []
-    if keyword:
-        # How this user's scan framed the keyword (required / preferred / ...) feeds the score.
-        source_sql = " AND jk.source = ?" if scan_source else ""
-        cols += (
-            ", (SELECT jk.stance FROM job_keywords jk WHERE jk.user_id = ? "
-            "AND jk.job_id = j.id AND jk.keyword = ? COLLATE NOCASE"
-            f"{source_sql}) AS kw_stance"
-        )
-        select_args.extend([user_id, keyword])
-        if scan_source:
-            select_args.append(scan_source)
-    sql = (
-        f"SELECT {cols} FROM jobs j "
-        f"JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ? "
-        f"WHERE {where}"
-    )
-    with connect(db_path) as conn:
-        fetched = conn.execute(sql, select_args + [user_id] + args).fetchall()
-    rows = [dict(r) for r in fetched]
-    if exclude or title_include or title_exclude:
-        kept = []
-        for row in rows:
-            title = row.get("title") or ""
-            if title_include and not has_any_phrase(title, title_include):
-                continue
-            if title_exclude and has_any_phrase(title, title_exclude):
-                continue
-            if exclude:
-                blob = f"{title}\n{row.get('description') or ''}"
-                if should_exclude(blob, exclude):
-                    continue
-            kept.append(row)
-        rows = kept
+    phrase_filter = bool(exclude or title_include or title_exclude)
     today = date.today().isoformat()
     resume = get_user_resume_profile(user_id, profile if isinstance(profile, dict) else None, db_path)
+    sig = heat_cache_sig(resume) if resume is not None else ""
+    # Word-boundary title/exclude rules stay in Python. Everything else is one
+    # indexed page: count, join the score cache, ORDER BY, LIMIT.
+    sql_page = not phrase_filter and (resume is not None or order != "score")
     scores_pending = False
-    if resume is not None:
-        scores_pending = _apply_resume_heat_scores(
-            user_id,
-            rows,
-            resume,
-            keyword,
-            db_path,
-            defer=defer_large_scores,
-        )
-    if scores_pending and order == "score":
-        order = "date"
-    for row in rows:
-        if resume is None:
-            row["score"], parts = score_job(row, keyword, profile)
-            tip = score_tooltip(parts)
-            row["score_tip"] = (
-                "No resume uploaded — using profile fit score.\n"
-                "Upload a default resume for a Heat Score based on degree, "
-                "languages, certifications, skills, and experience.\n"
-                + tip
-            )
-            row["heat_tier"] = heat_tier(float(row["score"] or 0))
-        row["pay_label"] = format_pay(row)
-        row["pay_estimated"] = row.get("salary_source") == "estimate"
-        row["pay_hint"] = pay_hint(row)
-        row["years_chips"] = years_chips(row.get("years_min"), row.get("years_max"), row.get("years_pref"))
-        row["certs"] = list(_json_dict(row.get("cert_stances")))
-        stance = row.get("kw_stance") or ""
-        row["kw_stance_label"] = {
-            "required": "Required",
-            "preferred": "Preferred",
-            "equivalent": "Equivalent",
-            "mentioned": "Mentioned",
-        }.get(stance, "")
-        row["clearance"] = row.get("clearance") or "unspecified"
-        row["clearance_label"] = CLEARANCE_LABELS.get(row["clearance"], row["clearance"])
-        row["status_label"] = STATUS_LABELS.get(row.get("status") or "", row.get("status") or "")
-        row["heard_back"] = row.get("heard_back") or "none"
-        row["heard_back_label"] = HEARD_BACK_LABELS.get(row["heard_back"], row["heard_back"])
-        follow = row.get("follow_up_on") or ""
-        row["overdue"] = bool(
-            follow
-            and follow < today
-            and (row.get("status") or "") not in ("rejected", "ignored", "accepted", "withdrawn", "ghosted")
-        )
-        row.pop("description", None)
-    _sort_jobs(rows, order)
-    total = len(rows)
-    page = JobPage(rows[offset : offset + limit])
-    page.scores_pending = scores_pending
-    if page:
-        ids = [row["id"] for row in page]
-        placeholders = ",".join("?" * len(ids))
+
+    if sql_page:
         with connect(db_path) as conn:
-            desc_rows = conn.execute(
-                f"SELECT id, description FROM jobs WHERE id IN ({placeholders})",
-                ids,
+            if resume is not None:
+                counted = conn.execute(
+                    f"""
+                    SELECT COUNT(*) AS total,
+                           COALESCE(SUM(CASE WHEN hs.job_id IS NULL THEN 1 ELSE 0 END), 0) AS missing
+                    FROM jobs j
+                    JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ?
+                    {_HEAT_JOIN}
+                    WHERE {where}
+                    """,
+                    [user_id, user_id, sig, *args],
+                ).fetchone()
+                total = int(counted["total"])
+                missing = int(counted["missing"])
+            else:
+                total = int(
+                    conn.execute(
+                        f"""
+                        SELECT COUNT(*)
+                        FROM jobs j
+                        JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ?
+                        WHERE {where}
+                        """,
+                        [user_id, *args],
+                    ).fetchone()[0]
+                )
+                missing = 0
+            inline_rows: list[dict[str, Any]] = []
+            if resume is not None and missing and (not defer_large_scores or missing <= HEAT_SCORE_INLINE_LIMIT):
+                cap = "" if not defer_large_scores else "LIMIT ?"
+                params: list[Any] = [user_id, user_id, sig, *args]
+                if defer_large_scores:
+                    params.append(HEAT_SCORE_INLINE_LIMIT)
+                fetched = conn.execute(
+                    f"""
+                    SELECT j.id, j.title, j.description, j.years_min, j.years_max, j.years_pref,
+                           j.is_remote, j.clearance
+                    FROM jobs j
+                    JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ?
+                    {_HEAT_JOIN}
+                    WHERE {where} AND hs.job_id IS NULL
+                    {cap}
+                    """,
+                    params,
+                ).fetchall()
+                inline_rows = [dict(row) for row in fetched]
+        if inline_rows and resume is not None:
+            _score_heat_rows(user_id, inline_rows, resume, keyword, db_path)
+        elif resume is not None and missing and defer_large_scores:
+            scores_pending = True
+        cols, select_args = _list_columns(
+            user_id, keyword, scan_source, heat=resume is not None, descriptions=False
+        )
+        heat_sql = _HEAT_JOIN if resume is not None else ""
+        heat_args: list[Any] = [user_id, sig] if resume is not None else []
+        order_sql = _list_order_sql(order, scored=resume is not None and not scores_pending)
+        with connect(db_path) as conn:
+            fetched = conn.execute(
+                f"""
+                SELECT {cols}
+                FROM jobs j
+                JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ?
+                {heat_sql}
+                WHERE {where}
+                ORDER BY {order_sql}
+                LIMIT ? OFFSET ?
+                """,
+                [*select_args, user_id, *heat_args, *args, limit, offset],
             ).fetchall()
-        descs = {row["id"]: row["description"] or "" for row in desc_rows}
+        page_rows = [dict(row) for row in fetched]
+        if resume is not None:
+            for row in page_rows:
+                _apply_joined_score(row, pending=scores_pending)
+        else:
+            _profile_scores(page_rows, keyword, profile)
+        for row in page_rows:
+            _label_job_row(row, today=today)
+        if scores_pending and resume is not None:
+            _schedule_heat_refresh(
+                user_id,
+                resume,
+                keyword,
+                None,
+                db_path,
+                unscored_where=where,
+                unscored_args=list(args),
+            )
+        page = JobPage(page_rows)
+    else:
+        cols, select_args = _list_columns(
+            user_id,
+            keyword,
+            scan_source,
+            heat=resume is not None,
+            descriptions=bool(exclude),
+        )
+        heat_sql = _HEAT_JOIN if resume is not None else ""
+        heat_args = [user_id, sig] if resume is not None else []
+        with connect(db_path) as conn:
+            fetched = conn.execute(
+                f"""
+                SELECT {cols}
+                FROM jobs j
+                JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ?
+                {heat_sql}
+                WHERE {where}
+                """,
+                [*select_args, user_id, *heat_args, *args],
+            ).fetchall()
+        rows = [dict(row) for row in fetched]
+        if phrase_filter:
+            kept = []
+            for row in rows:
+                title = row.get("title") or ""
+                if title_include and not has_any_phrase(title, title_include):
+                    continue
+                if title_exclude and has_any_phrase(title, title_exclude):
+                    continue
+                if exclude:
+                    blob = f"{title}\n{row.get('description') or ''}"
+                    if should_exclude(blob, exclude):
+                        continue
+                kept.append(row)
+            rows = kept
+        if resume is not None:
+            need = [row for row in rows if row.get("score") is None]
+            if defer_large_scores and len(need) > HEAT_SCORE_INLINE_LIMIT:
+                scores_pending = True
+                _schedule_heat_refresh(
+                    user_id,
+                    resume,
+                    keyword,
+                    [int(row["id"]) for row in need],
+                    db_path,
+                )
+                for row in need:
+                    _mark_score_pending(row)
+            elif need:
+                _score_heat_rows(user_id, need, resume, keyword, db_path)
+            for row in rows:
+                _apply_joined_score(row, pending=scores_pending)
+        else:
+            _profile_scores(rows, keyword, profile)
+        if scores_pending and order == "score":
+            order = "date"
+        _sort_jobs(rows, order)
+        total = len(rows)
+        page = JobPage(rows[offset : offset + limit])
         for row in page:
-            hay = f"{row.get('title') or ''}. {descs.get(row['id'], '')}"
-            row["snippet"] = make_snippet(hay, keyword) if keyword else None
+            _label_job_row(row, today=today)
+
+    page.scores_pending = scores_pending
+    if page and keyword:
+        descs: dict[int, str] = {}
+        with connect(db_path) as conn:
+            for chunk in _id_chunks([int(row["id"]) for row in page]):
+                placeholders = ",".join("?" * len(chunk))
+                for desc in conn.execute(
+                    f"SELECT id, description FROM jobs WHERE id IN ({placeholders})",
+                    chunk,
+                ):
+                    descs[int(desc["id"])] = desc["description"] or ""
+        for row in page:
+            hay = f"{row.get('title') or ''}. {descs.get(int(row['id']), '')}"
+            row["snippet"] = make_snippet(hay, keyword)
+    else:
+        for row in page:
+            row["snippet"] = None
     return page, total
 
 
@@ -2714,16 +3072,74 @@ def list_keywords(user_id: int, db_path: Path | None = None) -> list[dict[str, A
             """,
             (user_id, user_id),
         ).fetchall()
+        names = _scan_name_map(conn, user_id)
     scans = []
     for row in rows:
         item = dict(row)
         source = normalize_scan_source(item.get("source"))
         keyword = item["keyword"]
+        custom = names.get((keyword.casefold(), source), "")
         item["source"] = source
-        item["label"] = scan_label(keyword, source)
+        item["name"] = custom
+        item["label"] = scan_display_label(keyword, source, custom)
         item["value"] = encode_scan(source, keyword)
         scans.append(item)
     return scans
+
+
+def save_scan_names(
+    user_id: int,
+    entries: list[tuple[str, str | None, str]],
+    db_path: Path | None = None,
+) -> int:
+    """Store a display name for each scan. A blank name clears it."""
+    init_db(db_path)
+    cleaned: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for keyword, source, name in entries:
+        keyword = (keyword or "").strip()
+        if not keyword:
+            continue
+        source_key = normalize_scan_source(source)
+        key = (keyword.casefold(), source_key)
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append((keyword, source_key, (name or "").strip()[:80]))
+    if not cleaned:
+        return 0
+    conn = connect(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for keyword, source_key, name in cleaned:
+            if name:
+                conn.execute(
+                    """
+                    INSERT INTO scan_names (user_id, keyword, source, name)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(user_id, keyword, source) DO UPDATE SET name = excluded.name
+                    """,
+                    (user_id, keyword, source_key, name),
+                )
+            else:
+                conn.execute(
+                    """
+                    DELETE FROM scan_names
+                    WHERE user_id = ? AND keyword = ? COLLATE NOCASE AND source = ?
+                    """,
+                    (user_id, keyword, source_key),
+                )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        conn.close()
+    _invalidate_caches()
+    return len(cleaned)
 
 
 def get_profile(user_id: int, db_path: Path | None = None) -> dict[str, Any] | None:
@@ -2887,7 +3303,9 @@ def get_insights(
             scope_args.append(scan_source)
     from_sql = "FROM jobs j JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ?"
 
+    names: dict[tuple[str, str], str] = {}
     with connect(db_path) as conn:
+        names = _scan_name_map(conn, user_id)
         rows = conn.execute(
             f"""
             SELECT j.id, j.company, j.location, j.job_type, j.company_industry, uj.status,
@@ -2933,7 +3351,7 @@ def get_insights(
                 stored = {}
             run_source = (stored.get("source") if isinstance(stored, dict) else "") or "indeed"
             run["source"] = normalize_scan_source(run_source)
-            run["label"] = scan_label(run.get("keyword") or "", run["source"])
+            run["label"] = _named_label(run.get("keyword") or "", run["source"], names)
             recent_runs.append(run)
         loc_counts = conn.execute(
             """
@@ -3108,7 +3526,7 @@ def get_insights(
     result = {
         "keyword": keyword,
         "scan": encode_scan(scan_source, keyword) if keyword and scan_source else keyword,
-        "scan_label": scan_label(keyword, scan_source) if keyword and scan_source else keyword,
+        "scan_label": _named_label(keyword, scan_source, names) if keyword and scan_source else keyword,
         "total": total,
         "remote": remote,
         "remote_pct": share(remote),
@@ -3226,9 +3644,27 @@ def list_runs(user_id: int, limit: int = 40, db_path: Path | None = None) -> lis
     return [dict(r) for r in rows]
 
 
-def _drop_orphan_jobs(conn: sqlite3.Connection) -> None:
-    """Remove postings no user is linked to any more. Shared rows go only when unused."""
-    conn.execute("DELETE FROM jobs WHERE id NOT IN (SELECT job_id FROM user_jobs)")
+def _drop_orphan_jobs(conn: sqlite3.Connection, job_ids: list[int]) -> None:
+    """Remove these postings when no user is linked to them anymore.
+
+    Only the ids just unlinked are checked, through idx_user_jobs_job, so a
+    scan delete does not scan the whole jobs table while it holds the write lock.
+    """
+    ids = list({int(job_id) for job_id in job_ids})
+    step = 400
+    for start in range(0, len(ids), step):
+        chunk = ids[start : start + step]
+        placeholders = ",".join("?" * len(chunk))
+        conn.execute(
+            f"""
+            DELETE FROM jobs
+            WHERE id IN ({placeholders})
+              AND NOT EXISTS (
+                  SELECT 1 FROM user_jobs uj WHERE uj.job_id = jobs.id
+              )
+            """,
+            chunk,
+        )
 
 
 def delete_job(user_id: int, job_id: int, db_path: Path | None = None) -> None:
@@ -3244,9 +3680,179 @@ def delete_job(user_id: int, job_id: int, db_path: Path | None = None) -> None:
             "DELETE FROM job_keywords WHERE user_id = ? AND job_id = ?",
             (user_id, job_id),
         )
-        _drop_orphan_jobs(conn)
+        _drop_orphan_jobs(conn, [job_id])
         conn.commit()
     _invalidate_caches()
+
+
+def _scan_pairs(scans: list[tuple[str, str | None]]) -> list[tuple[str, str]]:
+    """(keyword, source) pairs. An empty source means that keyword on every board."""
+    chosen: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for keyword, source in scans:
+        if source is None and keyword and "|" in keyword:
+            source, keyword = decode_scan(keyword)
+        keyword = (keyword or "").strip()
+        if not keyword:
+            continue
+        scan_source = normalize_scan_source(source) if source else ""
+        key = (keyword.casefold(), scan_source)
+        if key in seen:
+            continue
+        seen.add(key)
+        chosen.append((keyword, scan_source))
+    return chosen
+
+
+def _doomed_match(alias: str) -> str:
+    """True when this keyword row is one of the scans loaded into doomed_scan."""
+    source_col = f"COALESCE(NULLIF({alias}.source, ''), 'indeed')"
+    return (
+        "EXISTS (SELECT 1 FROM doomed_scan d "
+        f"WHERE {alias}.keyword = d.keyword "
+        f"AND (d.source = '' OR {source_col} = d.source))"
+    )
+
+
+def _prepare_doomed_scans(conn: sqlite3.Connection, chosen: list[tuple[str, str]]) -> None:
+    conn.execute("DROP TABLE IF EXISTS doomed_scan")
+    conn.execute(
+        """
+        CREATE TEMP TABLE doomed_scan (
+            keyword TEXT NOT NULL COLLATE NOCASE,
+            source TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX doomed_scan_kw ON doomed_scan(keyword, source)")
+    conn.executemany(
+        "INSERT INTO doomed_scan (keyword, source) VALUES (?, ?)",
+        chosen,
+    )
+
+
+def delete_jobs_for_keywords(
+    user_id: int,
+    scans: list[tuple[str, str | None]],
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Remove these scans together.
+
+    A posting is deleted when every scan it belongs to is in `scans`. A posting
+    that also belongs to a scan left off the list stays. Each item is
+    (keyword, source); an empty source removes that keyword on every board.
+    """
+    chosen = _scan_pairs(scans)
+    if not chosen:
+        raise ValueError("Pick a scan to delete.")
+    init_db(db_path)
+    # A rescore writes a batch at a time. Cancel it before taking the write lock
+    # so this delete is not queued behind scores for postings that are going away.
+    cancel_heat_scores(user_id)
+    conn = connect(db_path)
+    names: dict[tuple[str, str], str] = {}
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _prepare_doomed_scans(conn, chosen)
+        # One indexed pass: a posting is removed only when every scan it belongs
+        # to is in this delete. Anything that still has a scan we are keeping stays.
+        conn.execute(
+            f"""
+            CREATE TEMP TABLE drop_job (id INTEGER PRIMARY KEY)
+            """
+        )
+        conn.execute(
+            f"""
+            INSERT INTO drop_job (id)
+            SELECT DISTINCT k.job_id
+            FROM job_keywords k
+            WHERE k.user_id = ?
+              AND {_doomed_match("k")}
+              AND NOT EXISTS (
+                  SELECT 1 FROM job_keywords other
+                  WHERE other.user_id = k.user_id
+                    AND other.job_id = k.job_id
+                    AND NOT {_doomed_match("other")}
+              )
+            """,
+            (user_id,),
+        )
+        kept = conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT k.job_id)
+            FROM job_keywords k
+            WHERE k.user_id = ?
+              AND {_doomed_match("k")}
+              AND k.job_id NOT IN (SELECT id FROM drop_job)
+            """,
+            (user_id,),
+        ).fetchone()[0]
+        deleted = conn.execute(
+            """
+            SELECT COUNT(*) FROM user_jobs
+            WHERE user_id = ? AND job_id IN (SELECT id FROM drop_job)
+            """,
+            (user_id,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            DELETE FROM job_heat_scores
+            WHERE user_id = ? AND job_id IN (SELECT id FROM drop_job)
+            """,
+            (user_id,),
+        )
+        conn.execute(
+            """
+            DELETE FROM user_jobs
+            WHERE user_id = ? AND job_id IN (SELECT id FROM drop_job)
+            """,
+            (user_id,),
+        )
+        conn.execute(
+            f"""
+            DELETE FROM job_keywords
+            WHERE user_id = ? AND {_doomed_match("job_keywords")}
+            """,
+            (user_id,),
+        )
+        conn.execute(
+            """
+            DELETE FROM jobs
+            WHERE id IN (SELECT id FROM drop_job)
+              AND NOT EXISTS (
+                  SELECT 1 FROM user_jobs uj WHERE uj.job_id = jobs.id
+              )
+            """
+        )
+        conn.commit()
+        names = _scan_name_map(conn, user_id)
+    except sqlite3.OperationalError as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        message = str(exc).lower()
+        if "locked" in message or "busy" in message:
+            raise ValueError(
+                "The database is busy saving scores or a scan. Try deleting that scan again in a moment."
+            ) from exc
+        raise
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        conn.close()
+    _invalidate_caches()
+    labels = [_named_label(keyword, source, names) for keyword, source in chosen]
+    return {
+        "deleted": deleted,
+        "kept": int(kept or 0),
+        "labels": labels,
+        "scans": len(chosen),
+    }
 
 
 def delete_jobs_for_keyword(
@@ -3267,67 +3873,13 @@ def delete_jobs_for_keyword(
     if not keyword:
         raise ValueError("Keyword is required")
     scan_source = normalize_scan_source(source) if source else ""
-    init_db(db_path)
-    source_sql = " AND source = ?" if scan_source else ""
-    with connect(db_path) as conn:
-        kept_args: list[Any] = [user_id, keyword]
-        if scan_source:
-            kept_args.append(scan_source)
-        kept_args.extend([user_id, keyword])
-        if scan_source:
-            kept_args.append(scan_source)
-        other = (
-            "NOT (keyword = ? COLLATE NOCASE" + source_sql + ")"
-            if scan_source
-            else "keyword <> ? COLLATE NOCASE"
-        )
-        kept = conn.execute(
-            f"""
-            SELECT COUNT(*)
-            FROM job_keywords
-            WHERE user_id = ? AND keyword = ? COLLATE NOCASE{source_sql}
-              AND job_id IN (
-                  SELECT job_id FROM job_keywords
-                  WHERE user_id = ? AND {other}
-              )
-            """,
-            kept_args,
-        ).fetchone()[0]
-        delete_args: list[Any] = [user_id, user_id, keyword]
-        if scan_source:
-            delete_args.append(scan_source)
-        delete_args.extend([user_id, keyword])
-        if scan_source:
-            delete_args.append(scan_source)
-        cur = conn.execute(
-            f"""
-            DELETE FROM user_jobs
-            WHERE user_id = ?
-              AND job_id IN (
-                  SELECT job_id FROM job_keywords
-                  WHERE user_id = ? AND keyword = ? COLLATE NOCASE{source_sql}
-              )
-              AND job_id NOT IN (
-                  SELECT job_id FROM job_keywords
-                  WHERE user_id = ? AND {other}
-              )
-            """,
-            delete_args,
-        )
-        deleted = cur.rowcount
-        conn.execute(
-            f"DELETE FROM job_keywords WHERE user_id = ? AND keyword = ? COLLATE NOCASE{source_sql}",
-            [user_id, keyword] + ([scan_source] if scan_source else []),
-        )
-        _drop_orphan_jobs(conn)
-        conn.commit()
-    _invalidate_caches()
+    result = delete_jobs_for_keywords(user_id, [(keyword, scan_source or None)], db_path)
     return {
         "keyword": keyword,
         "source": scan_source,
         "label": scan_label(keyword, scan_source) if scan_source else keyword,
-        "deleted": deleted,
-        "kept": int(kept or 0),
+        "deleted": result["deleted"],
+        "kept": result["kept"],
     }
 
 
@@ -3528,10 +4080,9 @@ def delete_material(user_id: int, material_id: int, db_path: Path | None = None)
         conn.commit()
     if row["kind"] == "resume":
         _RESUME_PROFILE_CACHE.clear()
-    stored = row["path"]
-    path = _resolve_material_path(stored)
-    if path is not None:
-        path.unlink()
+    from storage import remove_stored
+
+    remove_stored(row["path"])
 
 
 FILTER_TEMPLATE_KINDS = ("title_include", "title_exclude", "exclude")

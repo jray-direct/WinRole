@@ -1,9 +1,11 @@
 """Run with: python -m unittest test_score -v"""
 
 import gc
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import db
 from app import app
@@ -416,6 +418,120 @@ class HeatListDeferTests(unittest.TestCase):
                 self.assertTrue(all(isinstance(row["score"], float) for row in again))
                 db.wait_for_heat_scores(uid, timeout=20)
                 gc.collect()
+        finally:
+            db.HEAT_SCORE_INLINE_LIMIT = old_limit
+            gc.collect()
+
+
+class HeatScoreWriteTests(unittest.TestCase):
+    def test_score_write_skips_jobs_that_were_deleted(self):
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "heat.db"
+        uid = db.ensure_user("heat-fk", db_path=path)
+        now = "2026-01-01 00:00:00"
+        conn = db.connect(path)
+        try:
+            conn.execute(
+                """
+                INSERT INTO jobs (
+                    dedupe_key, title, description, first_seen_at, last_seen_at
+                ) VALUES ('live', 'Engineer', 'Python is required.', ?, ?)
+                """,
+                (now, now),
+            )
+            live_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            conn.execute(
+                "INSERT INTO user_jobs (user_id, job_id, added_at) VALUES (?, ?, ?)",
+                (uid, live_id, now),
+            )
+            conn.commit()
+            indexes = {row[1] for row in conn.execute("PRAGMA index_list(user_jobs)")}
+        finally:
+            conn.close()
+        self.assertIn("idx_user_jobs_job", indexes)
+        resume = parse_resume("Python\n", None)
+        db._score_heat_rows(
+            uid,
+            [
+                {"id": live_id, "title": "Engineer", "description": "Python is required."},
+                {"id": live_id + 999, "title": "Engineer", "description": "Python is required."},
+            ],
+            resume,
+            "",
+            path,
+        )
+        conn = db.connect(path)
+        try:
+            saved = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT job_id FROM job_heat_scores WHERE user_id = ?",
+                    (uid,),
+                )
+            ]
+        finally:
+            conn.close()
+        self.assertEqual(saved, [live_id])
+        gc.collect()
+
+    def test_jobs_page_does_not_bind_every_posting(self):
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "heat.db"
+        uid = db.ensure_user("heat-page", db_path=path)
+        now = "2026-01-01 00:00:00"
+        conn = db.connect(path)
+        try:
+            conn.execute(
+                """
+                INSERT INTO materials
+                    (user_id, kind, name, created_at, is_default, extracted_text)
+                VALUES (?, 'resume', 'Resume', ?, 1, ?)
+                """,
+                (uid, now, "Python\n"),
+            )
+            conn.executemany(
+                """
+                INSERT INTO jobs (
+                    dedupe_key, title, description, date_posted, first_seen_at, last_seen_at
+                ) VALUES (?, 'Engineer', 'Python is required.', ?, ?, ?)
+                """,
+                [(f"j{i}", f"2024-01-{(i % 28) + 1:02d}", now, now) for i in range(60)],
+            )
+            job_ids = [row[0] for row in conn.execute("SELECT id FROM jobs")]
+            conn.executemany(
+                "INSERT INTO user_jobs (user_id, job_id, added_at) VALUES (?, ?, ?)",
+                [(uid, job_id, now) for job_id in job_ids],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        real_connect = db.connect
+
+        def limited(db_path=None):
+            opened = real_connect(db_path)
+            opened.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 50)
+            return opened
+
+        old_limit = db.HEAT_SCORE_INLINE_LIMIT
+        db.HEAT_SCORE_INLINE_LIMIT = 1
+        try:
+            with patch.object(db, "connect", limited):
+                rows, total = db.query_jobs(
+                    uid,
+                    {"order": "score"},
+                    limit=5,
+                    offset=5,
+                    db_path=path,
+                    defer_large_scores=True,
+                )
+                self.assertEqual(total, 60)
+                self.assertEqual(len(rows), 5)
+                self.assertTrue(rows.scores_pending)
+                self.assertTrue(all(row.get("score_pending") for row in rows))
+                db.wait_for_heat_scores(uid, timeout=30)
         finally:
             db.HEAT_SCORE_INLINE_LIMIT = old_limit
             gc.collect()

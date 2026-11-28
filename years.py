@@ -9,7 +9,9 @@ Three numbers come out of a posting:
 
 A posting that never states a number gets three NULLs. A mention only counts
 when it sits in an experience context, so "401k vests after 3 years", "valid for
-3 years" and "30 years in business" do not turn into requirements.
+3 years" and "30 years in business" do not turn into requirements. Months,
+"a decade", "10-plus", "a year of", and a parenthetical "(3-5 years)" in a title
+count. "No less than N" is a floor. "Not required" is not a floor.
 
 Postings that state several numbers are the hard case. Each mention is
 classified on its own (required / preferred / max) from the words right around
@@ -26,9 +28,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 _WORDS = {
-    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
-    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
-    "fifteen": 15, "twenty": 20,
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30,
 }
 _NUM = r"(?:\d{1,2}(?:\.5)?|" + "|".join(_WORDS) + r")"
 _PAREN = r"(?:\s*\(\s*\d{1,2}\s*\))?"
@@ -44,9 +47,23 @@ _SINGLE = re.compile(
     rf"{_START}(?P<n>{_NUM}){_PAREN}\s*(?P<plus>\+|plus\b|or\s+(?:more|greater|higher)\b)?\s*[- ]?\s*{_YEARS}",
     re.I,
 )
-# "Experience: 5+" states a number and never writes the word "years".
+# "Experience: 5+" / "Years: 5+" / "YOE: 5" states a number and never repeats "years".
 _BARE_EXP = re.compile(
-    rf"\b(?:experience|exp)\b\s*[:\-]\s*(?P<n>{_NUM})\s*(?P<plus>\+)?(?!\s*{_YEARS})",
+    rf"\b(?:experience|exp|years?|yrs?|yoe)\b\s*[:\-]\s*(?P<n>{_NUM})\s*(?P<plus>\+)?(?!\s*{_YEARS})",
+    re.I,
+)
+_MONTH_NUM = r"(?:\d{1,3}|" + "|".join(_WORDS) + r")"
+_MONTH_RANGE = re.compile(
+    rf"{_START}(?P<lo>{_MONTH_NUM})\s*(?:-|to)\s*(?P<hi>{_MONTH_NUM})\s*(?P<plus>\+)?\s*months?\b",
+    re.I,
+)
+_MONTH_SINGLE = re.compile(
+    rf"{_START}(?P<n>{_MONTH_NUM})\s*(?P<plus>\+|plus\b|or\s+(?:more|greater|higher)\b)?\s*[- ]?\s*months?\b",
+    re.I,
+)
+# "52 weeks of specialized experience" is the federal way of writing one year.
+_WEEKS = re.compile(
+    rf"{_START}(?P<n>\d{{1,3}})\s*(?P<plus>\+)?\s*weeks?\s+of\s+(?:specialized\s+)?(?:progressive\s+)?experience\b",
     re.I,
 )
 
@@ -67,7 +84,8 @@ _EXPERIENCE_RIGHT_AFTER = re.compile(
 )
 _QUAL_WORDS = re.compile(
     r"\b(?:require[ds]?|requirements?|qualif\w*|minimum|must|preferred|ideal(?:ly)?|"
-    r"candidate|applicants?|you|your|we(?:'re| are) (?:looking|seeking)|seeking)\b",
+    r"candidate|applicants?|you|your|need(?:s|ed)?|"
+    r"we(?:'re| are) (?:looking|seeking)|seeking)\b",
     re.I,
 )
 _NOT_EXPERIENCE_AFTER = re.compile(
@@ -96,6 +114,8 @@ _COMPANY_LOOSE = re.compile(
     r"organization|agency|inc|llc|ltd|group|leader|has been|have been|history|legacy)\b",
     re.I,
 )
+# "we build" / "brings over 20 years" — company voice, only together with "over" / "more than".
+_COMPANY_VOICE = re.compile(r"\b(?:we|our)\b|\bbrings?\b|\bcelebrat\w*", re.I)
 _HISTORY_LEAD = re.compile(
     r"(?:\bover|\bmore than|\bnearly|\balmost|\bspanning|\bboasting|\bhaving|^with|^for)\s*$", re.I
 )
@@ -118,6 +138,8 @@ _MAX_BEFORE = re.compile(
     r"less than|fewer than|under|not exceed(?:ing)?|capped at)\s*$",
     re.I,
 )
+# "no less than 3" contains "less than", but it is a floor, not a ceiling.
+_MIN_FLOOR = re.compile(r"(?:no|not)\s+(?:less|fewer)\s+than\s*$", re.I)
 _MAX_AFTER = re.compile(r"^\W*(?:or\s+(?:less|fewer)|and\s+under|maximum|max\b)", re.I)
 
 _PREF_HEAD = re.compile(
@@ -167,6 +189,19 @@ _DEGREE_LEVEL = re.compile(
     r"b\.?s\.?|m\.?s\.?|b\.?a\.?|m\.?a\.?)(?![\w])",
     re.I,
 )
+_NOT_REQUIRED = re.compile(
+    r"\bnot\s+required\b|\bnot\s+a\s+requirement\b|"
+    r"\b(?:does|do)\s+not\s+require\b|\b(?:doesn't|don't|isn’t|isn't)\s+require\b|"
+    r"\bis\s+not\s+required\b",
+    re.I,
+)
+# A title parenthetical that is only the years: "Software Engineer (3-5 years)".
+_PAREN_REJECT = re.compile(
+    r"\b(?:warrant\w*|contracts?|vest\w*|leases?|renew\w*|valid|expires?|anniversary|"
+    r"sabbatical|pto|vacation|tuition|residen\w*|sponsor\w*)\b",
+    re.I,
+)
+
 _ALT_BEFORE = re.compile(
     r"\b(?:or|alternatively|in lieu of)\s+(?:an?\s+|the\s+)?"
     r"(?:(?:[\w'.]+\s+){0,3}(?:degree|diploma|bachelor\S*|master\S*|ph\.?d\.?|associate\S*|"
@@ -227,6 +262,33 @@ def _normalise(text: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     # "3+\nyears" (PDF-style wrapping) is one phrase.
     text = re.sub(r"(\d\+?)[ \t]*\n[ \t]*(?=(?:years?|yrs?)\b)", r"\1 ", text, flags=re.I)
+    # "y.o.e." / "Y.O.E" and "10-plus years" / "five-plus years".
+    text = re.sub(r"\by\s*\.\s*o\s*\.\s*e\s*\.?(?!\w)", "YOE", text, flags=re.I)
+    text = re.sub(rf"\b({_NUM})\s*-\s*plus\b", r"\1+", text, flags=re.I)
+    text = re.sub(r"\bhalf\s+a\s+decade\b", "5 years", text, flags=re.I)
+    text = re.sub(
+        r"\b((?:over|more than|nearly|almost)\s+)(?:a|one)\s+decade\b",
+        r"\1 10 years",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r"\b(?:a|one)\s+decade\b", "10 years", text, flags=re.I)
+    text = re.sub(r"\btwenty[\s-]+five\b", "25", text, flags=re.I)
+    text = re.sub(r"(\d)\s*(?:½|1/2)\b", r"\1.5", text)
+    text = re.sub(
+        rf"\b({_NUM})\s+and\s+(?:a|one)\s+half\b",
+        lambda m: str(_num(m.group(1)) + 0.5),
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"\ba\s+year\b(?=\s+of\s+(?!age\b|service\b))",
+        "1 year",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r"(?<=\d)\s*[~～]\s*(?=\d)", "-", text)
+    text = re.sub(r"(?<=\d)\s*-\s*to\s*-\s*(?=\d)", "-", text, flags=re.I)
     return text
 
 
@@ -245,6 +307,10 @@ def _units(text: str) -> list[tuple[str, str | None]]:
         label, rest = _split_label(line)
         if label is not None:
             mode = _heading_mode(label)
+            if re.search(r"\bnot\s+required\b", label, re.I):
+                # "not required: 5+ years" is a heading the required-word list would misread.
+                mode = "neutral"
+                rest = f"not required {rest}".strip()
             if not rest:
                 section = None if mode == "neutral" else mode
                 continue
@@ -370,6 +436,37 @@ def _find_mentions(unit: str, unit_index: int, section: str | None) -> list[Ment
             candidates.append(
                 (bare.start("n"), bare.end(), _num(bare.group("n")), None, bool(bare.group("plus")))
             )
+
+    def _taken(start: int) -> bool:
+        return any(s <= start < e for s, e in taken)
+
+    def _as_years(months: float) -> float:
+        return round(months / 12.0, 1)
+
+    for m in _MONTH_RANGE.finditer(unit):
+        if _taken(m.start()):
+            continue
+        lo_m, hi_m = _num(m.group("lo")), _num(m.group("hi"))
+        if hi_m < lo_m or hi_m > 240:
+            continue
+        candidates.append((m.start(), m.end(), _as_years(lo_m), _as_years(hi_m), bool(m.group("plus"))))
+        taken.append((m.start(), m.end()))
+    for m in _MONTH_SINGLE.finditer(unit):
+        if _taken(m.start()):
+            continue
+        months = _num(m.group("n"))
+        if months < 1 or months > 240:
+            continue
+        candidates.append((m.start(), m.end(), _as_years(months), None, bool(m.group("plus"))))
+        taken.append((m.start(), m.end()))
+    for m in _WEEKS.finditer(unit):
+        if _taken(m.start()):
+            continue
+        weeks = float(m.group("n"))
+        if weeks < 4 or weeks > 52 * 30:
+            continue
+        candidates.append((m.start(), m.end(), round(weeks / 52.0, 1), None, bool(m.group("plus"))))
+        taken.append((m.start(), m.end()))
     candidates.sort()
 
     for idx, (start, end, lo, hi, plus) in enumerate(candidates):
@@ -384,21 +481,34 @@ def _find_mentions(unit: str, unit_index: int, section: str | None) -> list[Ment
         near = unit[max(0, start - 90) : end + 90]
         in_requirement_block = section in ("required", "preferred")
         small = lo <= 15 and (hi is None or hi <= 15)
+        wrapped = before.rstrip().endswith("(") and after.lstrip().startswith(")")
+        if wrapped and _PAREN_REJECT.search(before[-50:]):
+            wrapped = False
         if not (
             _EXPERIENCE.search(near)
             or _EXPERIENCE_RIGHT_AFTER.search(unit[end : end + 40])
             or in_requirement_block
             # a bullet that opens with the number, "N+ years", or "Required N years"
             or (small and (start <= 3 or plus or _MARKER_BEFORE.search(before)))
+            # "Software Engineer (3-5 years)" — the parenthetical is the requirement.
+            or wrapped
+        ):
+            continue
+        if _NOT_REQUIRED.search(unit[max(0, start - 50) : end + 50]) and not _PREF_WORDS.search(
+            unit[max(0, start - 50) : end + 50]
         ):
             continue
         if not _QUAL_WORDS.search(unit):
-            if _COMPANY_HISTORY.search(unit):
+            if _COMPANY_HISTORY.search(unit) or re.search(r"\bcelebrat", unit, re.I):
                 continue
-            if _HISTORY_LEAD.search(before) and (lo >= 10 or _COMPANY_LOOSE.search(unit)):
+            # "over 10 years of experience" is a requirement. The same lead is the
+            # company's age when the sentence is about us ("we build", "brings").
+            if _HISTORY_LEAD.search(before) and (
+                _COMPANY_LOOSE.search(unit) or _COMPANY_VOICE.search(unit)
+            ):
                 continue
         text = unit[max(0, start - 30) : end + 40].strip()
-        if _MAX_BEFORE.search(before) or _MAX_AFTER.search(after):
+        if not _MIN_FLOOR.search(before) and (_MAX_BEFORE.search(before) or _MAX_AFTER.search(after)):
             found.append(Mention("max", None, hi if hi is not None else lo, unit_index, text, start))
             continue
         kind = _classify(unit, start, end, section, prev_end, next_start)

@@ -1,8 +1,10 @@
 import json
 import unittest
+from unittest.mock import patch
 
 from amazon import (
     display_location,
+    fetch_openings,
     html_to_text,
     is_remote_job,
     job_type_of,
@@ -119,6 +121,109 @@ class AmazonJobsTests(unittest.TestCase):
         self.assertEqual(rec["min_amount"], 24.0)
         self.assertEqual(rec["salary_source"], "employer")
         self.assertEqual(rec["company_industry"], "Fulfillment & Operations Management")
+
+
+def _values(pairs, key):
+    return [value for name, value in pairs if name == key]
+
+
+class AmazonFetchTests(unittest.TestCase):
+    def _job(self, icims, title):
+        return {"id_icims": str(icims), "title": title}
+
+    @patch("amazon._refresh_options")
+    @patch("amazon._page")
+    def test_keyword_is_one_search(self, page, refresh):
+        def fake(pairs):
+            self.assertEqual(_values(pairs, "base_query"), ["Junior"])
+            self.assertEqual(_values(pairs, "category[]"), [])
+            self.assertEqual(_values(pairs, "normalized_location[]"), ["Seattle, Washington, USA"])
+            return ([self._job("1", "Junior Analyst")], None, 1)
+
+        page.side_effect = fake
+        records, stats = fetch_openings(
+            keyword="Junior",
+            locations=["Seattle, Washington, USA"],
+        )
+        refresh.assert_not_called()
+        self.assertEqual(page.call_count, 1)
+        self.assertEqual([row["title"] for row in records], ["Junior Analyst"])
+        self.assertEqual(stats["raw_fetched"], 1)
+        self.assertEqual(stats["errors"], [])
+
+    @patch("amazon.PAGE_SIZE", 2)
+    @patch("amazon._refresh_options")
+    @patch("amazon._page")
+    def test_keyword_pages_past_the_first_page(self, page, refresh):
+        total = 5
+
+        def fake(pairs):
+            offset = int(_values(pairs, "offset")[0])
+            self.assertEqual(_values(pairs, "result_limit"), ["2"])
+            self.assertEqual(_values(pairs, "base_query"), ["Junior"])
+            if offset == 0:
+                return ([self._job(1, "A"), self._job(2, "B")], None, total)
+            if offset == 2:
+                return ([self._job(3, "C"), self._job(2, "B again")], None, total)
+            if offset == 4:
+                return ([self._job(5, "E")], None, total)
+            self.fail(f"unexpected offset {offset}")
+
+        page.side_effect = fake
+        records, stats = fetch_openings(keyword="Junior")
+        refresh.assert_not_called()
+        self.assertEqual(page.call_count, 3)
+        self.assertEqual([row["id"] for row in records], ["1", "2", "3", "5"])
+        self.assertEqual(stats["raw_fetched"], 5)
+
+    @patch("amazon._refresh_options")
+    @patch("amazon._page")
+    def test_capped_keyword_search_walks_categories(self, page, refresh):
+        refresh.return_value = ["Legal", "Design"]
+
+        def fake(pairs):
+            self.assertEqual(_values(pairs, "base_query"), ["engineer"])
+            cats = _values(pairs, "category[]")
+            if not cats:
+                return ([self._job("probe", "Probe")], None, 10000)
+            self.assertEqual(len(cats), 1)
+            return ([self._job(cats[0], "Role " + cats[0])], None, 10)
+
+        page.side_effect = fake
+        records, stats = fetch_openings(keyword="engineer")
+        refresh.assert_called_once()
+        self.assertEqual(page.call_count, 3)
+        self.assertEqual([row["id"] for row in records], ["Legal", "Design"])
+        self.assertEqual(stats["raw_fetched"], 2)
+
+    @patch("amazon._refresh_options")
+    @patch("amazon._page")
+    def test_blank_keyword_walks_every_category(self, page, refresh):
+        refresh.return_value = ["Legal"]
+
+        def fake(pairs):
+            self.assertEqual(_values(pairs, "base_query"), [])
+            self.assertEqual(_values(pairs, "category[]"), ["Legal"])
+            return ([self._job("9", "Counsel")], None, 1)
+
+        page.side_effect = fake
+        records, stats = fetch_openings()
+        refresh.assert_called_once()
+        self.assertEqual([row["title"] for row in records], ["Counsel"])
+        self.assertEqual(stats["raw_fetched"], 1)
+
+    @patch("amazon._refresh_options")
+    @patch("amazon._page")
+    def test_title_match_keeps_only_matching_titles(self, page, refresh):
+        page.return_value = (
+            [self._job("1", "Junior Analyst"), self._job("2", "Senior Analyst")],
+            None,
+            2,
+        )
+        records, stats = fetch_openings(keyword="Junior", kw_match="title")
+        refresh.assert_not_called()
+        self.assertEqual([row["title"] for row in records], ["Junior Analyst"])
+        self.assertEqual(stats["raw_fetched"], 2)
 
 
 if __name__ == "__main__":

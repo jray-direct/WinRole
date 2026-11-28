@@ -21,6 +21,8 @@ from flask import Flask, flash, g, jsonify, redirect, render_template, request, 
 from markupsafe import Markup, escape
 from werkzeug.utils import secure_filename
 
+from storage import enabled as s3_enabled
+from storage import put_material, resolve_stored, status_line
 from db import (
     HEARD_BACK,
     JOB_TYPES,
@@ -34,7 +36,8 @@ from db import (
     add_material,
     clear_profile,
     delete_job,
-    delete_jobs_for_keyword,
+    delete_jobs_for_keywords,
+    save_scan_names,
     delete_material,
     delete_run,
     ensure_user,
@@ -118,8 +121,9 @@ ALLOWED_MATERIAL_EXT = {".pdf", ".doc", ".docx", ".txt", ".md", ".rtf"}
 
 # Scans are queued and run one at a time by a single worker thread. Each user has
 # their own log/result/error, and at most one scan (running or queued) at a time.
+# One queued scan can include several targets; the worker runs those in order.
 _scan_cv = threading.Condition()
-_scan_queue: deque[tuple[int, SearchFilters]] = deque()
+_scan_queue: deque[tuple[int, list[SearchFilters]]] = deque()
 _scan_states: dict[int, dict[str, Any]] = {}
 _scan_current: int | None = None
 _scan_thread: threading.Thread | None = None
@@ -165,15 +169,34 @@ def _scan_loop() -> None:
         with _scan_cv:
             while not _scan_queue:
                 _scan_cv.wait()
-            uid, filters = _scan_queue.popleft()
+            uid, batch = _scan_queue.popleft()
             _scan_current = uid
             st = _scan_states.setdefault(uid, _blank_scan_state())
             st["queued"] = False
             st["running"] = True
         try:
-            result = run_scrape(filters, progress=_progress_for(uid), user_id=uid)
+            results: list[dict[str, Any]] = []
+            failures: list[str] = []
+            for index, filters in enumerate(batch, start=1):
+                if len(batch) > 1:
+                    _progress_for(uid)(
+                        f"Target {index} of {len(batch)}: {SCAN_SOURCES.get(filters.source, filters.source)}"
+                    )
+                try:
+                    result = run_scrape(filters, progress=_progress_for(uid), user_id=uid)
+                except Exception as exc:  # noqa: BLE001
+                    label = SCAN_SOURCES.get(filters.source, filters.source)
+                    failures.append(f"{label}: {exc}")
+                    _progress_for(uid)(f"! {label}: {exc}")
+                    continue
+                results.append({k: v for k, v in result.items() if k != "jobs"})
             with _scan_cv:
-                st["result"] = {k: v for k, v in result.items() if k != "jobs"}
+                if results:
+                    st["result"] = _combine_scan_results(results)
+                if failures and not results:
+                    st["error"] = " ".join(failures)
+                elif failures:
+                    st["error"] = "Some targets failed. " + " ".join(failures)
         except Exception as exc:  # noqa: BLE001
             with _scan_cv:
                 st["error"] = str(exc)
@@ -192,14 +215,21 @@ def _ensure_scan_thread() -> None:
             _scan_thread.start()
 
 
-def _enqueue_scan(uid: int, filters: SearchFilters) -> int:
-    """Queue a scan for this user. Returns how many scans are ahead of it."""
+def _enqueue_scan(uid: int, filters: SearchFilters | list[SearchFilters]) -> int:
+    """Queue a scan for this user. Returns how many scans are ahead of it.
+
+    A list runs each target in order as one scan, so the user still has a
+    single running job.
+    """
+    batch = list(filters) if isinstance(filters, list) else [filters]
+    if not batch:
+        raise ValueError("Pick at least one place to scan.")
     with _scan_cv:
         st = _scan_states.setdefault(uid, _blank_scan_state())
         if st["running"] or st["queued"]:
             raise ValueError("You already have a scan running or queued.")
         st.update(queued=True, running=False, result=None, error=None, log=[])
-        _scan_queue.append((uid, filters))
+        _scan_queue.append((uid, batch))
         ahead = len(_scan_queue) - 1 + (1 if _scan_current is not None else 0)
         _scan_cv.notify()
     _ensure_scan_thread()
@@ -974,6 +1004,150 @@ def toggle_region(region_key: str):
     return _scan_redirect()
 
 
+_BOARD_SOURCES = ("spacex", "amazon", "ibm", *COMPANY_BOARDS)
+_SCAN_WHERE = {
+    "spacex": " on the SpaceX careers page",
+    "amazon": " on Amazon Jobs in the United States",
+    "ibm": " on IBM careers",
+    "oracle": " on Oracle careers",
+    "hpe": " on HPE careers",
+    "verizon": " on Verizon careers",
+    "dell": " on Dell careers",
+    "cisco": " on Cisco careers",
+    "tesla": " on Tesla careers",
+    "walmart": " on Walmart technology careers",
+    "unitedhealth": " on UnitedHealth Group technology careers",
+    "wellsfargo": " on Wells Fargo technology careers in the United States",
+    "spectrum": " on Spectrum careers in the United States",
+}
+
+
+def _selected_scan_sources(values: list[str]) -> list[str]:
+    """Keep known targets, in the order the form listed them, with no duplicates."""
+    allowed = ("indeed", *_BOARD_SOURCES)
+    chosen: list[str] = []
+    for raw in values:
+        source = (raw or "").strip().lower()
+        if source in allowed and source not in chosen:
+            chosen.append(source)
+    return chosen
+
+
+def _scan_where_text(sources: list[str]) -> str:
+    if len(sources) <= 1:
+        return _SCAN_WHERE.get(sources[0], "") if sources else ""
+    names = [SCAN_SOURCES.get(source, source) for source in sources]
+    if len(names) == 2:
+        joined = f"{names[0]} and {names[1]}"
+    else:
+        joined = ", ".join(names[:-1]) + ", and " + names[-1]
+    return f" on {joined}"
+
+
+def _combine_scan_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "run_id": results[-1].get("run_id"),
+        "run_ids": [row.get("run_id") for row in results],
+        "sources": len(results),
+        "keyword": results[0].get("keyword"),
+        "matched": sum(int(row.get("matched") or 0) for row in results),
+        "filtered": sum(int(row.get("filtered") or 0) for row in results),
+        "inserted": sum(int(row.get("inserted") or 0) for row in results),
+        "updated": sum(int(row.get("updated") or 0) for row in results),
+    }
+
+
+def _keyword_for_source(
+    source: str,
+    keyword: str,
+    url_keyword: str,
+    amazon: dict[str, Any],
+    ibm: dict[str, Any],
+    company: dict[str, Any] | None,
+) -> str:
+    if keyword:
+        return keyword
+    if source == "spacex":
+        return url_keyword
+    if source == "amazon":
+        return str(amazon.get("keyword") or "")
+    if source == "ibm":
+        return str(ibm.get("keyword") or "")
+    if company:
+        return str(company.get("keyword") or "")
+    return ""
+
+
+def _filters_for_source(
+    source: str,
+    *,
+    keyword: str,
+    url_keyword: str,
+    amazon: dict[str, Any],
+    ibm: dict[str, Any],
+    company: dict[str, Any] | None,
+    remote_only: bool,
+    my_years: float | None,
+    min_salary: float | None,
+    days: int | None,
+    exclude_raw: str,
+    title_include_raw: str,
+    title_exclude_raw: str,
+    job_type: str | None,
+    kw_match: str,
+    fetch_full_text: bool,
+    board_programs: list[str],
+    board_locations: list[str],
+    board_disciplines: list[str],
+    board_url: str,
+) -> SearchFilters:
+    resolved = _keyword_for_source(source, keyword, url_keyword, amazon, ibm, company)
+    return SearchFilters(
+        keyword=resolved,
+        remote_only=remote_only,
+        my_years=my_years,
+        min_salary=min_salary,
+        posted_within_days=days,
+        exclude_keywords=[p.strip() for p in exclude_raw.split(",") if p.strip()],
+        title_include=[p.strip() for p in title_include_raw.split(",") if p.strip()],
+        title_exclude=[p.strip() for p in title_exclude_raw.split(",") if p.strip()],
+        job_type=job_type,
+        kw_match=kw_match,
+        fetch_description=fetch_full_text or source in _BOARD_SOURCES,
+        source=source,
+        board_programs=board_programs if source == "spacex" else [],
+        board_locations=(
+            board_locations if source == "spacex"
+            else amazon["locations"] if source == "amazon"
+            else ibm["cities"] if source == "ibm"
+            else company["locations"] if company
+            else []
+        ),
+        board_disciplines=board_disciplines if source == "spacex" else [],
+        board_url=(
+            board_url if source == "spacex"
+            else (request.form.get("amz_url") or "").strip() if source == "amazon"
+            else (request.form.get("ibm_url") or "").strip() if source == "ibm"
+            else (request.form.get(f"{source}_url") or "").strip() if company
+            else ""
+        ),
+        board_categories=(
+            amazon["categories"] if source == "amazon"
+            else ibm["categories"] if source == "ibm"
+            else company["categories"] if company
+            else []
+        ),
+        board_teams=amazon["teams"] if source == "amazon" else [],
+        board_schedules=amazon["schedules"] if source == "amazon" else [],
+        board_loc_query=amazon["loc_query"] if source == "amazon" else "",
+        board_intern=amazon["intern"] if source == "amazon" else False,
+        board_seasonal=amazon["seasonal"] if source == "amazon" else False,
+        board_countries=ibm["countries"] if source == "ibm" else (company["countries"] if company else []),
+        board_levels=ibm["levels"] if source == "ibm" else [],
+        board_modes=ibm["modes"] if source == "ibm" else (company["modes"] if company else []),
+    )
+
+
 @app.route("/scrape", methods=["GET", "POST"])
 def scrape_page():
     if request.method == "GET":
@@ -988,13 +1162,13 @@ def scrape_page():
         years_raw = (request.form.get("my_years") or "").strip()
         days_raw = (request.form.get("days") or "").strip()
         exclude_raw = (request.form.get("exclude") or "").strip()
-        title_include_raw = (request.form.get("title_include") or "").strip()
-        title_exclude_raw = (request.form.get("title_exclude") or "").strip()
         job_type = (request.form.get("job_type") or "").strip().lower()
         keyword = (request.form.get("keyword") or "").strip()
-        source = (request.form.get("source") or "indeed").strip().lower()
-        if source not in ("indeed", "spacex", "amazon", "ibm", *COMPANY_BOARDS):
-            source = "indeed"
+        scan_name = (request.form.get("scan_name") or "").strip()[:80]
+        sources = _selected_scan_sources(request.form.getlist("source"))
+        if not sources:
+            flash("Pick at least one place to scan.", "error")
+            return redirect(url_for("jobs", scan=1))
         board_url = (request.form.get("board_url") or "").strip()
         board_programs, board_locations, board_disciplines, url_keyword = merge_board_filters(
             request.form.getlist("sx_programs"),
@@ -1020,20 +1194,6 @@ def scrape_page():
             request.form.getlist("ibm_modes"),
             (request.form.get("ibm_url") or "").strip(),
         )
-        company = None
-        if source == "spacex" and not keyword and url_keyword:
-            keyword = url_keyword
-        if source == "amazon" and not keyword and amazon["keyword"]:
-            keyword = amazon["keyword"]
-        if source == "ibm" and not keyword and ibm["keyword"]:
-            keyword = ibm["keyword"]
-        if source in COMPANY_BOARDS:
-            company = merge_company_filters(source, request.form)
-            if not keyword and company["keyword"]:
-                keyword = company["keyword"]
-        if not keyword:
-            flash("Enter a keyword.", "error")
-            return redirect(url_for("jobs", scan=1))
 
         try:
             my_years = float(years_raw) if years_raw else None
@@ -1043,83 +1203,61 @@ def scrape_page():
             flash("Years, salary and days must be numbers.", "error")
             return redirect(url_for("jobs", scan=1))
 
+        if "indeed" in sources and not get_enabled_locations(_uid()):
+            flash("Enable at least one location first.", "error")
+            return redirect(url_for("jobs", scan=1))
+
         kw_match = (request.form.get("kw_match") or "any").strip().lower()
         if kw_match not in ("any", "title", "preferred", "required"):
             kw_match = "any"
-        filters = SearchFilters(
-            keyword=keyword,
-            remote_only=request.form.get("remote") == "1",
-            my_years=my_years,
-            min_salary=min_salary,
-            posted_within_days=days,
-            exclude_keywords=[p.strip() for p in exclude_raw.split(",") if p.strip()],
-            title_include=[p.strip() for p in title_include_raw.split(",") if p.strip()],
-            title_exclude=[p.strip() for p in title_exclude_raw.split(",") if p.strip()],
-            job_type=job_type if job_type in JOB_TYPES else None,
-            kw_match=kw_match,
-            fetch_description=request.form.get("full_text") == "1" or source in ("spacex", "amazon", "ibm", *COMPANY_BOARDS),
-            source=source,
-            board_programs=board_programs if source == "spacex" else [],
-            board_locations=(
-                board_locations if source == "spacex"
-                else amazon["locations"] if source == "amazon"
-                else ibm["cities"] if source == "ibm"
-                else company["locations"] if company
-                else []
-            ),
-            board_disciplines=board_disciplines if source == "spacex" else [],
-            board_url=(
-                board_url if source == "spacex"
-                else (request.form.get("amz_url") or "").strip() if source == "amazon"
-                else (request.form.get("ibm_url") or "").strip() if source == "ibm"
-                else (request.form.get(f"{source}_url") or "").strip() if company
-                else ""
-            ),
-            board_categories=(
-                amazon["categories"] if source == "amazon"
-                else ibm["categories"] if source == "ibm"
-                else company["categories"] if company
-                else []
-            ),
-            board_teams=amazon["teams"] if source == "amazon" else [],
-            board_schedules=amazon["schedules"] if source == "amazon" else [],
-            board_loc_query=amazon["loc_query"] if source == "amazon" else "",
-            board_intern=amazon["intern"] if source == "amazon" else False,
-            board_seasonal=amazon["seasonal"] if source == "amazon" else False,
-            board_countries=ibm["countries"] if source == "ibm" else (company["countries"] if company else []),
-            board_levels=ibm["levels"] if source == "ibm" else [],
-            board_modes=ibm["modes"] if source == "ibm" else (company["modes"] if company else []),
-        )
-        if source not in ("spacex", "amazon", "ibm", *COMPANY_BOARDS):
-            locations = get_enabled_locations(_uid())
-            if not locations:
-                flash("Enable at least one location first.", "error")
+        job_type_value = job_type if job_type in JOB_TYPES else None
+        fetch_full_text = request.form.get("full_text") == "1"
+        batch: list[SearchFilters] = []
+        for source in sources:
+            company = merge_company_filters(source, request.form) if source in COMPANY_BOARDS else None
+            filters = _filters_for_source(
+                source,
+                keyword=keyword,
+                url_keyword=url_keyword,
+                amazon=amazon,
+                ibm=ibm,
+                company=company,
+                remote_only=request.form.get("remote") == "1",
+                my_years=my_years,
+                min_salary=min_salary,
+                days=days,
+                exclude_raw=exclude_raw,
+                title_include_raw="",
+                title_exclude_raw="",
+                job_type=job_type_value,
+                kw_match=kw_match,
+                fetch_full_text=fetch_full_text,
+                board_programs=board_programs,
+                board_locations=board_locations,
+                board_disciplines=board_disciplines,
+                board_url=board_url,
+            )
+            if not filters.keyword:
+                flash("Enter a keyword.", "error")
                 return redirect(url_for("jobs", scan=1))
+            batch.append(filters)
 
         try:
-            ahead = _enqueue_scan(_uid(), filters)
+            ahead = _enqueue_scan(_uid(), batch)
         except ValueError as exc:
             flash(str(exc), "error")
             return redirect(url_for("jobs", scan=1))
-        where = {
-            "spacex": " on the SpaceX careers page",
-            "amazon": " on Amazon Jobs in the United States",
-            "ibm": " on IBM careers",
-            "oracle": " on Oracle careers",
-            "hpe": " on HPE careers",
-            "verizon": " on Verizon careers",
-            "dell": " on Dell careers",
-            "cisco": " on Cisco careers",
-            "tesla": " on Tesla careers",
-            "walmart": " on Walmart technology careers",
-            "unitedhealth": " on UnitedHealth Group technology careers",
-            "wellsfargo": " on Wells Fargo technology careers in the United States",
-            "spectrum": " on Spectrum careers in the United States",
-        }.get(source, "")
+        if scan_name:
+            save_scan_names(
+                _uid(),
+                [(item.keyword, item.source, scan_name) for item in batch],
+            )
+        label = scan_name or keyword or batch[0].keyword
+        where = _scan_where_text(sources)
         if ahead:
-            flash(f"Scan for {keyword!r}{where} queued behind {ahead} other scan(s).", "info")
+            flash(f"Scan for {label!r}{where} queued behind {ahead} other scan(s).", "info")
         else:
-            flash(f"Scan started for {keyword!r}{where}.", "success")
+            flash(f"Scan started for {label!r}{where}.", "success")
         return redirect(url_for("jobs", scan=1))
 
     return redirect(url_for("jobs", scan=1))
@@ -1149,22 +1287,52 @@ def scrape_clear_log():
     return redirect(url_for("jobs", scan=1))
 
 
+@app.post("/scans/names")
+def rename_scans():
+    entries: list[tuple[str, str | None, str]] = []
+    for raw, name in zip(request.form.getlist("scan"), request.form.getlist("name")):
+        source, keyword = decode_scan((raw or "").strip())
+        if not keyword:
+            continue
+        entries.append((keyword, source or "indeed", name))
+    if not entries:
+        flash("No scans to name.")
+        return redirect(url_for("jobs"))
+    save_scan_names(_uid(), entries)
+    flash("Scan names saved.")
+    return redirect(url_for("jobs"))
+
+
 @app.post("/hygiene/keyword")
 def hygiene_delete_keyword():
-    keyword = (request.form.get("keyword") or "").strip()
-    source, keyword = decode_scan(keyword)
-    if not keyword:
+    scans: list[tuple[str, str | None]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in request.form.getlist("keyword"):
+        source, keyword = decode_scan((raw or "").strip())
+        if not keyword:
+            continue
+        key = (keyword.casefold(), source)
+        if key in seen:
+            continue
+        seen.add(key)
+        scans.append((keyword, source or None))
+    if not scans:
         flash("Pick a scan to delete.")
         return redirect(url_for("jobs"))
 
     def n_jobs(count: int) -> str:
         return "1 job" if count == 1 else f"{count} jobs"
 
-    label = scan_label(keyword, source) if source else keyword
     try:
-        result = delete_jobs_for_keyword(_uid(), keyword, source=source or None)
-        deleted = int(result["deleted"])
-        kept = int(result.get("kept") or 0)
+        result = delete_jobs_for_keywords(_uid(), scans)
+    except ValueError as exc:
+        flash(str(exc))
+        return redirect(url_for("jobs"))
+    deleted = int(result["deleted"])
+    kept = int(result.get("kept") or 0)
+    labels = result.get("labels") or []
+    if len(labels) == 1:
+        label = labels[0]
         if deleted and kept:
             flash(
                 f"Removed {label!r}. Deleted {n_jobs(deleted)}. "
@@ -1176,8 +1344,19 @@ def hygiene_delete_keyword():
             flash(f"Removed {label!r}. Kept {n_jobs(kept)} that also matched another scan.")
         else:
             flash(f"Removed {label!r}.")
-    except ValueError as exc:
-        flash(str(exc))
+    else:
+        lead = f"Removed {len(labels)} scans."
+        if deleted and kept:
+            flash(
+                f"{lead} Deleted {n_jobs(deleted)}. "
+                f"Kept {n_jobs(kept)} that also matched a scan you kept."
+            )
+        elif deleted:
+            flash(f"{lead} Deleted {n_jobs(deleted)}.")
+        elif kept:
+            flash(f"{lead} Kept {n_jobs(kept)} that also matched a scan you kept.")
+        else:
+            flash(lead)
     return redirect(url_for("jobs"))
 
 
@@ -1253,7 +1432,7 @@ def materials():
     body = (request.form.get("body") or "").strip()
     uploaded = request.files.get("file")
     try:
-        filename, stored = _store_upload(uploaded)
+        filename, stored = _store_upload(uploaded, _uid())
         if kind == "resume" and not filename and not body:
             raise ValueError("Choose a resume file to upload")
         if not name and filename:
@@ -1544,11 +1723,9 @@ def materials_file(material_id: int):
     if material is None or not material.get("path"):
         flash("No file attached.")
         return redirect(url_for("tracker") + "#materials")
-    path = Path(material["path"])
-    if not path.is_absolute():
-        path = Path(__file__).resolve().parent / path
-    if not path.is_file():
-        flash("File is missing on disk.")
+    path = resolve_stored(material["path"])
+    if path is None:
+        flash("That file is not in S3." if str(material["path"]).startswith("s3://") else "File is missing on disk.")
         return redirect(url_for("tracker") + "#materials")
     return send_file(
         path,
@@ -1557,7 +1734,7 @@ def materials_file(material_id: int):
     )
 
 
-def _store_upload(uploaded) -> tuple[str | None, str | None]:
+def _store_upload(uploaded, user_id: int) -> tuple[str | None, str | None]:
     if uploaded is None or not uploaded.filename:
         return None, None
     filename = secure_filename(uploaded.filename)
@@ -1566,9 +1743,14 @@ def _store_upload(uploaded) -> tuple[str | None, str | None]:
     ext = Path(filename).suffix.lower()
     if ext not in ALLOWED_MATERIAL_EXT:
         raise ValueError("Use PDF, Word, text, Markdown, or RTF")
+    data = uploaded.read()
+    if not data:
+        raise ValueError("That file is empty")
+    if s3_enabled():
+        return filename, put_material(user_id, filename, data)
     MATERIALS_DIR.mkdir(parents=True, exist_ok=True)
     stored = MATERIALS_DIR / f"{uuid.uuid4().hex}{ext}"
-    uploaded.save(stored)
+    stored.write_bytes(data)
     return filename, str(stored.relative_to(Path(__file__).resolve().parent))
 
 
@@ -1624,6 +1806,7 @@ def main() -> None:
     except ImportError:
         print("WARNING: pymupdf is not installed, so PDF resumes will not parse.")
         print("         From this folder: venv\\Scripts\\python.exe -m pip install -r requirements.txt")
+    print(status_line())
     print("Win Role  ->  http://127.0.0.1:5050")
     app.run(host="127.0.0.1", port=5050, debug=False, threaded=True)
 

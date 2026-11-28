@@ -133,8 +133,51 @@ class KeywordAndClearance(unittest.TestCase):
         self.assertTrue(keyword_pattern("CCNA").search("Cisco Certified Network Associate"))
         self.assertFalse(keyword_pattern("CCNA").search("CCNA Security"))
         self.assertTrue(keyword_pattern("AI-Assisted").search("AI assisted workflows"))
+        self.assertTrue(keyword_pattern("Node.js").search("Node.js experience"))
+        self.assertFalse(keyword_pattern("Node.js").search("Node js experience"))
         self.assertTrue(keyword_pattern("senior", whole_word=True).search("Sr. Engineer"))
         self.assertFalse(keyword_pattern("senior", whole_word=True).search("seniority track"))
+
+    def test_aws_solutions_architect_spellings(self):
+        from resume import CERTIFICATIONS
+        from scrape import indeed_search_terms
+        from textutil import keyword_pattern
+
+        spellings = [
+            "AWS Solutions Architect - Associate",
+            "AWS Solutions Architect \u2013 Associate",
+            "AWS Solutions Architect Associate",
+            "AWS Solutions Architect (Associate)",
+            "AWS Solutions Architect: Associate",
+            "AWS Solutions Architect, Associate",
+            "AWS Solutions Architect / Associate",
+            "AWS Solutions Architect \u2013 Associate Level",
+            "AWS Certified Solutions Architect Associate",
+            "Amazon Web Services Certified Solutions Architect - Associate",
+            "Amazon Web Services (AWS) Certified Solutions Architect - Associate",
+            "Amazon Web Services (AWS) Solutions Architect - Associate",
+            "SAA-C03",
+        ]
+        pattern = keyword_pattern("AWS Solutions Architect - Associate")
+        cert = dict(CERTIFICATIONS)["AWS Solutions Architect"]
+        for text in spellings:
+            self.assertTrue(pattern.search(text), text)
+            self.assertTrue(cert.search(text), text)
+        self.assertFalse(pattern.search("AWS Solutions Architect"))
+        self.assertFalse(pattern.search("AWS Solutions Architect Professional"))
+        self.assertFalse(pattern.search("Senior Solutions Architect"))
+        self.assertFalse(pattern.search("AWS Solutions Architect associated with the account"))
+        long_name = keyword_pattern(
+            "Amazon Web Services (AWS) Certified Solutions Architect - Associate"
+        )
+        self.assertTrue(long_name.search("AWS Solutions Architect (Associate)"))
+        queries = [
+            "AWS Solutions Architect Associate",
+            "Amazon Web Services Solutions Architect Associate",
+        ]
+        self.assertEqual(indeed_search_terms("AWS Solutions Architect - Associate"), queries)
+        self.assertEqual(indeed_search_terms("AWS Solutions Architect \u2013 Associate Level"), queries)
+        self.assertEqual(indeed_search_terms("AWS"), ["AWS"])
 
     def test_network_plus_stance(self):
         from textutil import mention_stance
@@ -172,6 +215,65 @@ class KeywordAndClearance(unittest.TestCase):
         self.assertEqual(classify_clearance("Active TS/SCI"), "sci")
         self.assertEqual(classify_clearance("Clearance: Must be able to obtain a DOE L/Q Security Clearance"), "ts")
         self.assertEqual(classify_clearance("Tier 3 help desk support"), "unspecified")
+        self.assertEqual(classify_clearance("TS//SCI eligibility required"), "sci")
+        self.assertEqual(classify_clearance("Top-Secret clearance required"), "ts")
+        self.assertEqual(classify_clearance("Must hold a Secret"), "secret")
+        self.assertEqual(classify_clearance("Active Secret clearance required. TS/SCI preferred."), "secret")
+        self.assertEqual(classify_clearance("Secret clearance required; Top Secret is a plus."), "secret")
+        self.assertEqual(classify_clearance("MBI required"), "public_trust")
+        self.assertEqual(classify_clearance("SF-86 required for this Secret position"), "secret")
+        self.assertEqual(classify_clearance("TS/SCI preferred"), "sci")
+        self.assertEqual(classify_clearance("The T3 conference room is on the third floor."), "unspecified")
+        self.assertEqual(classify_clearance("Work is performed at the T5 building."), "unspecified")
+        self.assertEqual(classify_clearance("Security Clearance: N/A"), "none")
+        self.assertEqual(classify_clearance("NACLC"), "secret")
+        self.assertEqual(classify_clearance("Position Sensitivity: Noncritical-Sensitive"), "secret")
+        self.assertEqual(classify_clearance("Position Sensitivity: Critical-Sensitive"), "ts")
+        self.assertEqual(classify_clearance("CI polygraph required"), "sci")
+        self.assertEqual(classify_clearance("We protect trade secrets and confidential information."), "unspecified")
+        self.assertEqual(classify_clearance("Secret Service liaison experience is a plus."), "unspecified")
+
+    def test_years_phrases_and_cert_names(self):
+        self.assertEqual(parse("10-plus years of experience in systems administration"), (10, None, None))
+        self.assertEqual(parse("over 10 years of experience in cybersecurity"), (10, None, None))
+        self.assertEqual(parse("a decade of experience in information security"), (10, None, None))
+        self.assertEqual(parse("at least a year of experience with Active Directory"), (1, None, None))
+        self.assertEqual(parse("a year of help desk experience"), (1, None, None))
+        self.assertEqual(parse("Y.O.E.: 5+"), (5, None, None))
+        self.assertEqual(parse("not required: 5+ years of Kubernetes"), (None, None, None))
+        self.assertEqual(parse("6 months of experience in a SOC"), (0.5, None, None))
+        self.assertEqual(parse("18 months of relevant experience"), (1.5, None, None))
+        self.assertEqual(parse("36 months of progressive experience"), (3, None, None))
+        self.assertEqual(parse("52 weeks of specialized experience"), (1, None, None))
+        self.assertEqual(parse("two and a half years of experience"), (2.5, None, None))
+        self.assertEqual(parse("3+ y.o.e. in networking"), (3, None, None))
+        self.assertEqual(parse("eighteen years of experience in defense programs"), (18, None, None))
+        self.assertEqual(parse("no less than 3 years of experience"), (3, None, None))
+        self.assertEqual(parse("5+ years of experience is not required"), (None, None, None))
+        self.assertEqual(parse("does not require 5 years of experience"), (None, None, None))
+        self.assertEqual(parse("Software Engineer (3-5 years)"), (3, 5, None))
+        self.assertEqual(parse("celebrating 25 years of delivering cyber solutions"), (None, None, None))
+        self.assertEqual(
+            parse("With over 30 years of experience in solar, we build more than panels."),
+            (None, None, None),
+        )
+
+        from textutil import cert_stances
+
+        self.assertEqual(cert_stances("Network+ a plus"), {"Network+": "preferred"})
+        self.assertNotIn("A+", cert_stances("Network+ a plus"))
+        self.assertEqual(cert_stances("CySA preferred"), {"CySA+": "preferred"})
+        self.assertIn("CISSP", cert_stances("Certified Information Systems Security Professional"))
+        self.assertIn("GCIH", cert_stances("GIAC Certified Incident Handler"))
+        self.assertNotIn("CISA", cert_stances("per CISA guidelines and the CISA directive"))
+        self.assertIn("CISA", cert_stances("CISA certification required"))
+        self.assertNotIn("CSM", cert_stances("Customer Success Manager (CSM) will own the book"))
+        self.assertIn("CSM", cert_stances("Certified Scrum Master"))
+        self.assertNotIn("AZ-104", cert_stances("Senior Azure Administrator"))
+        self.assertIn("AZ-104", cert_stances("AZ-104 or Azure Administrator Associate"))
+        self.assertNotIn("A+", cert_stances("An A+ player who writes clean code"))
+        self.assertIn("Security+", cert_stances("CompTIA Security+ SY0-701"))
+        self.assertEqual(cert_stances("no CISSP required"), {})
 
     def test_remote_role_phrase(self):
         from db import infer_remote

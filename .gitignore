@@ -8,6 +8,7 @@ __pycache__/
 
 # Secrets — never commit Cognito/client credentials
 cognito_secret.txt
+s3.env
 .env
 .env.*
 !.env.example

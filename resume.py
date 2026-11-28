@@ -16,6 +16,7 @@ from xml.etree import ElementTree
 from textutil import (
     CLEARANCE_LABELS,
     CLEARANCE_RANK,
+    aws_solutions_architect_cert_body,
     classify_clearance,
     keyword_pattern,
     mention_stance,
@@ -288,36 +289,57 @@ _LANG_BY_NAME: dict[str, re.Pattern[str]] = dict(PROGRAMMING_LANGUAGES)
 
 # Certifications catalog: (canonical label, compiled pattern)
 _CERT_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    # CompTIA
-    ("A+", keyword_pattern("A+", whole_word=True)),
-    ("Network+", keyword_pattern("Network+", whole_word=True)),
-    ("Security+", keyword_pattern("Security+", whole_word=True)),
+    # CompTIA. Exam IDs (SY0-701, N10-008, …) are the cert even when the name is absent.
+    ("A+", re.compile(keyword_pattern("A+", whole_word=True).pattern + r"|\b220-1[0-2]\d{2}\b", re.I)),
+    ("Network+", re.compile(keyword_pattern("Network+", whole_word=True).pattern + r"|\bn10-\d{3}\b", re.I)),
+    ("Security+", re.compile(keyword_pattern("Security+", whole_word=True).pattern + r"|\bsy0-\d{3}\b", re.I)),
     ("Linux+", keyword_pattern("Linux+", whole_word=True)),
     ("Server+", keyword_pattern("Server+", whole_word=True)),
     ("Cloud+", keyword_pattern("Cloud+", whole_word=True)),
-    ("CySA+", keyword_pattern("CySA+", whole_word=True)),
-    ("PenTest+", keyword_pattern("PenTest+", whole_word=True)),
-    ("CASP+", re.compile(r"(?<![A-Za-z])(?:comptia\s+)?(?:casp(?:\s*\+|[\s-]*plus\b)|securityx)\b", re.I)),
+    ("CySA+", re.compile(
+        r"(?<![A-Za-z0-9])(?:comptia\s+)?cysa(?:\s*\+|[\s-]*plus\b)?(?![A-Za-z0-9])|\bcs0-\d{3}\b",
+        re.I,
+    )),
+    ("PenTest+", re.compile(keyword_pattern("PenTest+", whole_word=True).pattern + r"|\bpt0-\d{3}\b", re.I)),
+    ("CASP+", re.compile(
+        r"(?<![A-Za-z])(?:comptia\s+)?(?:casp(?:\s*\+|[\s-]*plus\b)|securityx)\b"
+        r"|\b(?:comptia\s+)?advanced\s+security\s+practitioner\b"
+        r"|\bcas-00\d\b",
+        re.I,
+    )),
     ("Data+", keyword_pattern("Data+", whole_word=True)),
+    ("DataSys+", re.compile(r"(?<![A-Za-z])(?:comptia\s+)?datasys(?:\s*\+|[\s-]*plus\b)", re.I)),
     ("Project+", keyword_pattern("Project+", whole_word=True)),
+    ("ITF+", re.compile(
+        r"(?<![A-Za-z])(?:comptia\s+)?itf(?:\s*\+|[\s-]*plus\b)|\bcomptia\s+it\s+fundamentals\b",
+        re.I,
+    )),
     # Cisco
     ("CCNA", keyword_pattern("CCNA", whole_word=True)),
-    ("CCNP", re.compile(r"\bccnp\b", re.I)),
+    ("CCNP", re.compile(r"\bccnp\b|\bcisco\s+certified\s+network\s+professional\b", re.I)),
     ("CCIE", re.compile(r"\bccie\b", re.I)),
     ("CCST", re.compile(r"\bccst\b", re.I)),
     ("CyberOps", re.compile(r"\bcyberops\b", re.I)),
-    # ISC2 & ISACA
-    ("CISSP", re.compile(r"\bcissp\b", re.I)),
+    # ISC2 & ISACA. Bare "CISA" is also the federal agency, so the agency's own words don't count.
+    ("CISSP", re.compile(
+        r"\bcissp\b|\bcertified\s+information\s+systems\s+security\s+professional\b",
+        re.I,
+    )),
     ("SSCP", re.compile(r"\bsscp\b", re.I)),
     ("CCSP", re.compile(r"\bccsp\b", re.I)),
-    ("CISA", re.compile(r"\bcisa\b", re.I)),
-    ("CISM", re.compile(r"\bcism\b", re.I)),
+    ("CISA", re.compile(
+        r"\bcertified\s+information\s+systems\s+auditor\b"
+        r"|\bcisa\b(?!(?:'s)?\s*(?:\(|[-–])?\s*(?:directive|guidelines?|alerts?|agency|"
+        r"cybersecurity\s+and\s+infrastructure|region|binding|operational|issued|published))",
+        re.I,
+    )),
+    ("CISM", re.compile(r"\bcism\b|\bcertified\s+information\s+security\s+manager\b", re.I)),
     ("CRISC", re.compile(r"\bcrisc\b", re.I)),
     # Security & GIAC
-    ("OSCP", re.compile(r"\boscp\b", re.I)),
+    ("OSCP", re.compile(r"\boscp\b|\boffensive\s+security\s+certified\s+professional\b", re.I)),
     ("CEH", re.compile(r"\bceh\b|\bcertified\s+ethical\s+hacker\b", re.I)),
-    ("GSEC", re.compile(r"\bgsec\b", re.I)),
-    ("GCIH", re.compile(r"\bgcih\b", re.I)),
+    ("GSEC", re.compile(r"\bgsec\b|\bgiac\s+security\s+essentials\b", re.I)),
+    ("GCIH", re.compile(r"\bgcih\b|\bgiac\s+certified\s+incident\s+handler\b", re.I)),
     ("GCIA", re.compile(r"\bgcia\b", re.I)),
     ("GCFA", re.compile(r"\bgcfa\b", re.I)),
     ("GPEN", re.compile(r"\bgpen\b", re.I)),
@@ -326,16 +348,30 @@ _CERT_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("PNPT", re.compile(r"\bpnpt\b", re.I)),
     ("BTL1", re.compile(r"\bbtl1\b", re.I)),
     # AWS
-    ("AWS Solutions Architect", re.compile(r"\baws(?:\s+certified)?\s+solutions?\s+architect\b|\bsaa-c\d\d\b", re.I)),
+    ("AWS Solutions Architect", re.compile(aws_solutions_architect_cert_body(), re.I)),
     ("AWS Cloud Practitioner", re.compile(r"\baws(?:\s+certified)?\s+cloud\s+practitioner\b|\bclf-c\d\d\b", re.I)),
     ("AWS SysOps", re.compile(r"\baws(?:\s+certified)?\s+sysops\b|\bsoa-c\d\d\b", re.I)),
-    ("AWS Developer", re.compile(r"\baws(?:\s+certified)?\s+developer\b|\bdva-c\d\d\b", re.I)),
+    ("AWS Developer", re.compile(
+        r"\bdva-c\d\d\b|\baws\s+certified\s+developer\b|\baws\s+developer\s+(?:associate|certification)\b",
+        re.I,
+    )),
     ("AWS Security Specialty", re.compile(r"\baws(?:\s+certified)?\s+security\s*[-–]?\s*specialty\b|\bscs-c\d\d\b", re.I)),
     # Azure / Microsoft
     ("AZ-900", re.compile(r"\baz-?900\b|\bazure\s+fundamentals\b", re.I)),
-    ("AZ-104", re.compile(r"\baz-?104\b|\bazure\s+administrator\b", re.I)),
-    ("AZ-305", re.compile(r"\baz-?305\b|\bazure\s+solutions?\s+architect\b", re.I)),
-    ("AZ-500", re.compile(r"\baz-?500\b|\bazure\s+security\s+engineer\b", re.I)),
+    ("AZ-104", re.compile(
+        r"\baz-?104\b|\bazure\s+administrator\s+associate\b|\bcertified\s+azure\s+administrator\b"
+        r"|\bazure\s+administrator\b(?=[^.\n]{0,30}\b(?:certification|certified|cert)\b)",
+        re.I,
+    )),
+    ("AZ-305", re.compile(
+        r"\baz-?305\b|\bazure\s+solutions?\s+architect\s+(?:expert|certification)\b"
+        r"|\bcertified\s+azure\s+solutions?\s+architect\b",
+        re.I,
+    )),
+    ("AZ-500", re.compile(
+        r"\baz-?500\b|\bazure\s+security\s+engineer\s+associate\b|\bcertified\s+azure\s+security\s+engineer\b",
+        re.I,
+    )),
     ("SC-900", re.compile(r"\bsc-?900\b", re.I)),
     ("SC-200", re.compile(r"\bsc-?200\b", re.I)),
     ("SC-300", re.compile(r"\bsc-?300\b", re.I)),
@@ -349,7 +385,10 @@ _CERT_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("CKAD", re.compile(r"\bckad\b", re.I)),
     ("CKS", re.compile(r"\bcks\b|\bcertified\s+kubernetes\s+security\b", re.I)),
     ("Terraform Associate", re.compile(r"\bterraform\s+associate\b", re.I)),
-    ("RHCSA", re.compile(r"\brhcsa\b", re.I)),
+    ("RHCSA", re.compile(
+        r"\brhcsa\b|\bred\s+hat\s+certified\s+(?:system|systems)\s+administrator\b",
+        re.I,
+    )),
     ("RHCE", re.compile(r"\brhce\b", re.I)),
     ("LPIC", re.compile(r"\blpic-?[123]?\b", re.I)),
     ("VCP", re.compile(r"\bvcp(?:-dcv|-nv)?\b", re.I)),
@@ -360,7 +399,12 @@ _CERT_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("ITIL", keyword_pattern("ITIL", whole_word=True)),
     ("PMP", re.compile(r"\bpmp\b|\bproject\s+management\s+professional\b", re.I)),
     ("CAPM", re.compile(r"\bcapm\b", re.I)),
-    ("CSM", re.compile(r"\bcsm\b|\bcertified\s+scrum\s*master\b", re.I)),
+    ("CSM", re.compile(
+        r"\bcertified\s+scrum\s*master\b"
+        r"|\bcsm\b(?=[^.\n]{0,40}\b(?:certification|certified|scrum)\b)"
+        r"|\b(?:scrum|certification|certified)\b[^.\n]{0,48}\bcsm\b",
+        re.I,
+    )),
     ("DoD 8570 / 8140", re.compile(r"\b(?:dod\s+)?(?:8570|8140)\b|\biat\s+(?:level\s+)?(?:i{1,3}|[123])\b|\biam\s+(?:level\s+)?(?:i{1,3}|[123])\b", re.I)),
 )
 
@@ -654,7 +698,7 @@ ALIAS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = _compile_alias_pattern
 
 # Bump when the Heat Score formula changes. Stored beside the resume signature
 # so cached rows from the previous formula are not reused.
-SCORER_VERSION = "6"
+SCORER_VERSION = "7"
 SIMILAR_THRESHOLD = 0.78
 
 

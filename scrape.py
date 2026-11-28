@@ -38,6 +38,7 @@ from textutil import (
     keyword_pattern,
     mention_stance,
     parse_phrases,
+    scan_search_terms,
     should_exclude,
 )
 from years import parse_years
@@ -350,7 +351,12 @@ def _cert_key(keyword: str) -> str:
 
 
 def indeed_search_terms(keyword: str) -> list[str]:
-    """Indeed queries for a keyword. A bare plus is never sent as-is."""
+    """Indeed queries for a keyword. A bare plus is never sent as-is.
+
+    A cert that postings spell several ways is searched under each name Indeed
+    will actually return. Punctuation variants stay one query, because Indeed
+    ignores dashes and commas.
+    """
     text = keyword.strip()
     if len(text) >= 2 and text[0] == text[-1] == '"':
         text = text[1:-1].strip()
@@ -362,6 +368,9 @@ def indeed_search_terms(keyword: str) -> list[str]:
         return [f'"{text[:-1]} Plus"']
     if "+" in text:
         return [f'"{re.sub(r"\+", " Plus", text)}"']
+    alias = scan_search_terms(text)
+    if alias:
+        return alias
     return [text]
 
 
@@ -422,20 +431,37 @@ def scrape_amazon_jobs(
     from amazon import fetch_openings
 
     log = progress or (lambda msg: print(msg, flush=True))
-    records, board_stats = fetch_openings(
-        categories=filters.board_categories,
-        locations=filters.board_locations,
-        teams=filters.board_teams,
-        schedules=filters.board_schedules,
-        loc_query=filters.board_loc_query,
-        intern=filters.board_intern,
-        seasonal=filters.board_seasonal,
-        title_include=filters.title_include,
-        title_exclude=filters.title_exclude,
-        keyword=filters.keyword,
-        kw_match=filters.kw_match,
-        progress=log,
-    )
+    terms = indeed_search_terms(filters.keyword) if filters.keyword.strip() else [""]
+    if len(terms) > 1:
+        log("Amazon searches " + " and ".join(repr(term) for term in terms))
+    records: list[dict[str, Any]] = []
+    seen_board: set[str] = set()
+    raw_fetched = 0
+    board_errors: list[str] = []
+    for term in terms:
+        batch, board_stats = fetch_openings(
+            categories=filters.board_categories,
+            locations=filters.board_locations,
+            teams=filters.board_teams,
+            schedules=filters.board_schedules,
+            loc_query=filters.board_loc_query,
+            intern=filters.board_intern,
+            seasonal=filters.board_seasonal,
+            title_include=filters.title_include,
+            title_exclude=filters.title_exclude,
+            keyword=term,
+            kw_match=filters.kw_match,
+            progress=log,
+        )
+        raw_fetched += int(board_stats.get("raw_fetched") or 0)
+        board_errors.extend(board_stats.get("errors") or [])
+        for rec in batch:
+            key = job_key(rec)
+            if key in seen_board:
+                continue
+            seen_board.add(key)
+            records.append(rec)
+    board_stats = {"raw_fetched": raw_fetched, "errors": board_errors}
     pattern = keyword_pattern(filters.keyword)
     collected: dict[str, dict[str, Any]] = {}
     seen_keyword: set[str] = set()

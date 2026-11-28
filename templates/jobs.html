@@ -20,7 +20,7 @@
   </div>
   <div class="head-actions">
     {% if state.running %}<span class="pill">Scan running</span>{% endif %}
-    <button type="button" class="btn btn-outline-secondary" id="open-delete">Delete scan</button>
+    <button type="button" class="btn btn-outline-secondary" id="open-delete">Delete scans</button>
     <button type="button" id="open-scan" class="btn btn-primary">{{ "View scan" if state.running else "New scan" }}</button>
   </div>
 </div>
@@ -33,12 +33,12 @@
     </div>
     <div class="scan-wait" role="status" {% if not state.running %}hidden{% endif %}>
       <div class="spinner" aria-hidden="true"></div>
-      <p>This may take a few minutes. A company board reads every posting before the keyword filter.</p>
+      <p>Each selected target runs in order. This may take a few minutes. A company board reads every posting before the keyword filter.</p>
     </div>
     <div class="scan-setup" {% if state.running %}hidden{% endif %}>
     <p class="muted" data-scan-source="indeed">Turn on locations and set the keyword. Pay, years, remote, and the rest are filters on the job list after the scan.</p>
     <p class="muted" data-scan-source="spacex" hidden>Reads the SpaceX jobs page, then keeps openings whose posting matches your keyword. Pay, years, remote, and the rest still filter the list afterward.</p>
-    <p class="muted" data-scan-source="amazon" hidden>Reads Amazon Jobs for the United States, then keeps openings whose posting matches your keyword. Pay, years, remote, and the rest still filter the list afterward.</p>
+    <p class="muted" data-scan-source="amazon" hidden>Searches Amazon Jobs in the United States for your keyword, then keeps openings whose posting matches it. Pay, years, remote, and the rest still filter the list afterward.</p>
     <p class="muted" data-scan-source="ibm" hidden>Reads the IBM careers search, then keeps openings whose posting matches your keyword. Pay, years, remote, and the rest still filter the list afterward.</p>
     {% for board in company_boards %}
     <p class="muted" data-scan-source="{{ board.id }}" hidden>{{ board.blurb }} Pay, years, remote, and the rest still filter the list afterward.</p>
@@ -51,28 +51,45 @@
       <div class="scan-section">
         <h3>Required</h3>
         <div class="scan-required">
-          <label class="scan-source">Where should this scan look?
-            <select name="source" id="scan-source" class="form-select">
-              <option value="indeed">Indeed — cities you turned on</option>
-              <option value="spacex">SpaceX careers — spacex.com/careers/jobs</option>
-              <option value="amazon">Amazon Jobs — United States</option>
-              <option value="ibm">IBM careers — ibm.com/careers</option>
+          <fieldset class="scan-source">
+            <div class="scan-target-head">
+              <span id="scan-source-label">Where should this scan look?</span>
+              <button type="button" class="btn btn-outline-secondary btn-sm" id="sources-all">Select all</button>
+              <button type="button" class="btn btn-outline-secondary btn-sm" id="sources-none">Select none</button>
+            </div>
+            <div class="scan-targets" id="scan-targets" role="group" aria-labelledby="scan-source-label">
+              <label class="check">
+                <input type="checkbox" name="source" value="indeed" class="form-check-input" checked>
+                Indeed — cities you turned on
+              </label>
+              <label class="check">
+                <input type="checkbox" name="source" value="spacex" class="form-check-input">
+                SpaceX careers — spacex.com/careers/jobs
+              </label>
+              <label class="check">
+                <input type="checkbox" name="source" value="amazon" class="form-check-input">
+                Amazon Jobs — United States
+              </label>
+              <label class="check">
+                <input type="checkbox" name="source" value="ibm" class="form-check-input">
+                IBM careers — ibm.com/careers
+              </label>
               {% for board in company_boards %}
-              <option value="{{ board.id }}">{{ board.label }}</option>
+              <label class="check">
+                <input type="checkbox" name="source" value="{{ board.id }}" class="form-check-input">
+                {{ board.label }}
+              </label>
               {% endfor %}
-            </select>
-            <span class="hint" data-scan-source="indeed">Searches the cities above.</span>
-            <span class="hint" data-scan-source="spacex" hidden>Every opening on spacex.com/careers/jobs, including Starlink, Starship, Falcon, Dragon, Starshield, and the SpaceXSI roles that page lists. The writeup is the posting behind each row.</span>
-            <span class="hint" data-scan-source="amazon" hidden>Every US opening on amazon.jobs. The site itself stops at 10,000 results, so this scan walks each job category and keeps the full posting text that comes with each row.</span>
-            <span class="hint" data-scan-source="ibm" hidden>Every opening on ibm.com/careers/search, in every country, unless you narrow it below. Each row includes the full posting.</span>
-            {% for board in company_boards %}
-            <span class="hint" data-scan-source="{{ board.id }}" hidden>{{ board.hint }}</span>
-            {% endfor %}
-          </label>
+            </div>
+          </fieldset>
           <label>What role are you hunting?
             <input type="text" id="scan-keyword" name="keyword" required placeholder="Network+" class="form-control">
-            <span class="hint">Saves jobs that mention this in the title or description.</span>
+            <span class="hint">Saves jobs that mention this in the title or description. Dashes, commas, and the other usual names of a cert count as the same search.</span>
             <button type="button" class="btn btn-outline-secondary" data-suggest-keyword data-url="{{ url_for('suggest_keyword') }}">Suggest from resume</button>
+          </label>
+          <label>Scan name
+            <input type="text" name="scan_name" maxlength="80" placeholder="Cert hunt" class="form-control" autocomplete="off">
+            <span class="hint">Shows in the scan list. The keyword above is still what the search matches.</span>
           </label>
           <label>How strict should keyword matching be?
             <select name="kw_match" class="form-select">
@@ -274,20 +291,18 @@
         {% endif %}
       </div>
       {% endfor %}
-      <div class="scan-section">
-        <h3>Title filters</h3>
-        <div class="title-filters">
-          {{ templated_field("title_include", "title_include", "", templates.title_include, "Title includes", "analyst, engineer", "form") }}
-          {{ templated_field("title_exclude", "title_exclude", "", templates.title_exclude, "Title excludes", "senior, lead, intern", "form") }}
-        </div>
-      </div>
       <button type="submit" {% if state.running %}disabled{% endif %} class="btn btn-primary scan-submit">
         {{ "Running…" if state.running else "Start scan" }}
       </button>
     </form>
     {% if state.result %}
     <p class="ok">
-      Last run #{{ state.result.run_id }}: {{ state.result.matched }} keyword hits,
+      {% if state.result.sources and state.result.sources > 1 %}
+      Last scan across {{ state.result.sources }} targets:
+      {% else %}
+      Last run #{{ state.result.run_id }}:
+      {% endif %}
+      {{ state.result.matched }} keyword hits,
       {{ state.result.filtered }} saved ({{ state.result.inserted }} new).
     </p>
     {% endif %}
@@ -432,41 +447,51 @@
 <div class="modal-backdrop" id="delete-modal" hidden>
   <div class="scan-modal narrow" role="dialog" aria-modal="true" aria-labelledby="delete-title">
     <div class="modal-head">
-      <h2 id="delete-title">Delete a scan</h2>
+      <h2 id="delete-title">Delete scans</h2>
       <button type="button" class="modal-close btn btn-outline-secondary" id="close-delete" aria-label="Close">×</button>
     </div>
-    <p class="muted">Jobs found only by that scan are deleted. Jobs that also matched another scan stay.</p>
-    <ul class="delete-list">
-      {% for k in keywords %}
-      {% set shared = (k.overlap or 0)|int %}
-      {% set exclusive = (k.n or 0)|int - shared %}
-      <li class="delete-row">
-        <div class="delete-copy">
-          <strong class="idle-text">{{ k.label }}</strong>
-          <span class="delete-meta idle-text">
-            {{ k.n }} job{{ 's' if k.n != 1 else '' }}{% if shared %} · {{ shared }} also in another scan{% endif %}
-          </span>
-          <span class="confirm-text">
-            {% if exclusive %}
-            Delete {{ exclusive }} job{{ 's' if exclusive != 1 else '' }} from “{{ k.label }}”?{% if shared %} {{ shared }} shared stay.{% endif %}
-            {% else %}
-            Remove “{{ k.label }}”? All {{ k.n }} job{{ 's' if k.n != 1 else '' }} stay in other scans.
-            {% endif %}
-          </span>
-        </div>
-        <div class="idle">
-          <button type="button" class="btn btn-outline-danger" data-ask-delete>{{ "Remove" if exclusive == 0 else "Delete" }}</button>
-        </div>
-        <form class="ask" method="post" action="{{ url_for('hygiene_delete_keyword') }}">
-          <input type="hidden" name="keyword" value="{{ k.value }}">
-          <button type="submit" class="btn btn-danger">{{ "Remove" if exclusive == 0 else "Delete" }}</button>
-          <button type="button" class="btn btn-outline-secondary" data-cancel-delete>Cancel</button>
-        </form>
-      </li>
-      {% else %}
-      <li class="muted delete-empty">No saved scans yet.</li>
-      {% endfor %}
-    </ul>
+    <p class="muted">Jobs found only by the scans you select are deleted. Jobs that also matched a scan you keep stay. A name here is what the scan list shows.</p>
+    {% if keywords %}
+    <form method="post" action="{{ url_for('rename_scans') }}" id="rename-scans"></form>
+    <form method="post" action="{{ url_for('hygiene_delete_keyword') }}" id="delete-scans-form">
+      <div class="delete-tools">
+        <label class="check">
+          <input type="checkbox" id="delete-all" class="form-check-input">
+          Select all
+        </label>
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="delete-none">Select none</button>
+        <button type="submit" class="btn btn-outline-secondary btn-sm" form="rename-scans">Save names</button>
+      </div>
+      <ul class="delete-list">
+        {% for k in keywords %}
+        {% set shared = (k.overlap or 0)|int %}
+        <li class="delete-row">
+          <label class="check delete-copy">
+            <input type="checkbox" name="keyword" value="{{ k.value }}" class="form-check-input delete-pick">
+            <span>
+              <strong>{{ k.label }}</strong>
+              <span class="delete-meta">
+                {% if k.name %}{{ k.keyword }} · {% endif %}{{ k.n }} job{{ 's' if k.n != 1 else '' }}{% if shared %} · {{ shared }} also in another scan{% endif %}
+              </span>
+            </span>
+          </label>
+          <input type="hidden" name="scan" value="{{ k.value }}" form="rename-scans">
+          <input type="text" name="name" value="{{ k.name }}" maxlength="80" placeholder="Name" class="form-control scan-name-input" aria-label="Name for {{ k.keyword }}" form="rename-scans" autocomplete="off">
+        </li>
+        {% endfor %}
+      </ul>
+      <div class="delete-actions" id="delete-idle">
+        <button type="button" class="btn btn-danger" id="delete-ask" disabled>Delete selected</button>
+      </div>
+      <div class="delete-actions" id="delete-confirm" hidden>
+        <p class="confirm-text" id="delete-confirm-text"></p>
+        <button type="submit" class="btn btn-danger">Delete</button>
+        <button type="button" class="btn btn-outline-secondary" id="delete-cancel">Cancel</button>
+      </div>
+    </form>
+    {% else %}
+    <p class="muted delete-empty">No saved scans yet.</p>
+    {% endif %}
   </div>
 </div>
 
@@ -638,16 +663,32 @@
     const backdrop = document.getElementById("scan-modal");
     const scanForm = backdrop ? backdrop.querySelector("form.scrape-form") : null;
     const scanDraftKey = "jobscraper-scan-draft";
+    function selectedSources() {
+      const box = document.getElementById("scan-targets");
+      if (!box) return [];
+      return Array.prototype.map.call(
+        box.querySelectorAll('input[name="source"]:checked'),
+        function (el) { return el.value; }
+      );
+    }
     function syncScanSource() {
-      const sourceEl = document.getElementById("scan-source");
-      const picked = sourceEl && sourceEl.value;
-      const mode = document.querySelector('[data-scan-source="' + CSS.escape(picked || "") + '"]') ? picked : "indeed";
+      const picked = selectedSources();
       document.querySelectorAll("[data-scan-source]").forEach(function (el) {
-        const show = el.getAttribute("data-scan-source").split(/\s+/).indexOf(mode) >= 0;
+        const keys = el.getAttribute("data-scan-source").split(/\s+/);
+        let show = false;
+        for (let i = 0; i < keys.length; i++) {
+          if (picked.indexOf(keys[i]) >= 0) show = true;
+        }
         el.hidden = !show;
       });
       const keyword = document.getElementById("scan-keyword");
-      if (keyword) keyword.required = mode === "indeed";
+      if (keyword) keyword.required = picked.indexOf("indeed") >= 0;
+    }
+    function setAllSources(on) {
+      const box = document.getElementById("scan-targets");
+      if (!box) return;
+      box.querySelectorAll('input[name="source"]').forEach(function (el) { el.checked = on; });
+      syncScanSource();
     }
     function saveScanDraft() {
       if (!scanForm) return;
@@ -682,7 +723,8 @@
         if (el.type === "checkbox") {
           const group = scanForm.querySelectorAll('input[type="checkbox"][name="' + CSS.escape(el.name) + '"]');
           if (group.length > 1) {
-            const picked = Array.isArray(data[el.name]) ? data[el.name] : [];
+            let picked = data[el.name];
+            if (!Array.isArray(picked)) picked = picked ? [String(picked)] : [];
             el.checked = picked.indexOf(el.value) >= 0;
             return;
           }
@@ -706,6 +748,11 @@
         const form = event.target;
         if (!form || !form.classList) return;
         if (form.classList.contains("scrape-form")) {
+          if (!selectedSources().length) {
+            event.preventDefault();
+            alert("Pick at least one place to scan.");
+            return;
+          }
           sessionStorage.removeItem(scanDraftKey);
           const setup = backdrop.querySelector(".scan-setup");
           const wait = backdrop.querySelector(".scan-wait");
@@ -802,8 +849,12 @@
         setScanRegion(panel, tab.getAttribute("data-region-pick"), { focus: true });
       });
     }
-    const sourceEl = document.getElementById("scan-source");
-    if (sourceEl) sourceEl.addEventListener("change", syncScanSource);
+    const targets = document.getElementById("scan-targets");
+    if (targets) targets.addEventListener("change", syncScanSource);
+    const allBtn = document.getElementById("sources-all");
+    const noneBtn = document.getElementById("sources-none");
+    if (allBtn) allBtn.addEventListener("click", function () { setAllSources(true); });
+    if (noneBtn) noneBtn.addEventListener("click", function () { setAllSources(false); });
     syncScanSource();
     if (backdrop && backdrop.classList.contains("open")) {
       restoreScanDraft();
@@ -858,37 +909,90 @@
     const deleteBackdrop = document.getElementById("delete-modal");
     const openDelete = document.getElementById("open-delete");
     const closeDeleteBtn = document.getElementById("close-delete");
-    function clearDeleteConfirm() {
-      if (!deleteBackdrop) return;
-      deleteBackdrop.querySelectorAll(".delete-row.is-confirm").forEach(function (row) {
-        row.classList.remove("is-confirm");
-      });
+    const deleteForm = document.getElementById("delete-scans-form");
+    const deleteAll = document.getElementById("delete-all");
+    const deleteNone = document.getElementById("delete-none");
+    const deleteAsk = document.getElementById("delete-ask");
+    const deleteIdle = document.getElementById("delete-idle");
+    const deleteConfirm = document.getElementById("delete-confirm");
+    const deleteConfirmText = document.getElementById("delete-confirm-text");
+    const deleteCancel = document.getElementById("delete-cancel");
+    function deletePicks() {
+      if (!deleteForm) return [];
+      return Array.from(deleteForm.querySelectorAll(".delete-pick"));
+    }
+    function hideDeleteConfirm() {
+      if (deleteConfirm) deleteConfirm.hidden = true;
+      if (deleteIdle) deleteIdle.hidden = false;
+    }
+    function syncDeleteSelection() {
+      const picks = deletePicks();
+      const selected = picks.filter(function (box) { return box.checked; }).length;
+      if (deleteAsk) {
+        deleteAsk.disabled = selected === 0;
+        deleteAsk.textContent = selected ? "Delete selected (" + selected + ")" : "Delete selected";
+      }
+      if (deleteAll) {
+        deleteAll.checked = picks.length > 0 && selected === picks.length;
+        deleteAll.indeterminate = selected > 0 && selected < picks.length;
+      }
+    }
+    function resetDeleteForm() {
+      deletePicks().forEach(function (box) { box.checked = false; });
+      hideDeleteConfirm();
+      syncDeleteSelection();
     }
     function openDeleteModal() {
-      clearDeleteConfirm();
+      resetDeleteForm();
       showModal(deleteBackdrop);
     }
     function closeDeleteModal() {
-      clearDeleteConfirm();
+      resetDeleteForm();
       hideModal(deleteBackdrop);
     }
     if (openDelete) openDelete.addEventListener("click", openDeleteModal);
     if (closeDeleteBtn) closeDeleteBtn.addEventListener("click", closeDeleteModal);
+    if (deleteAll) {
+      deleteAll.addEventListener("change", function () {
+        const on = deleteAll.checked;
+        deletePicks().forEach(function (box) { box.checked = on; });
+        hideDeleteConfirm();
+        syncDeleteSelection();
+      });
+    }
+    if (deleteNone) {
+      deleteNone.addEventListener("click", function () {
+        deletePicks().forEach(function (box) { box.checked = false; });
+        hideDeleteConfirm();
+        syncDeleteSelection();
+      });
+    }
+    if (deleteForm) {
+      deleteForm.addEventListener("change", function (event) {
+        if (!event.target.classList.contains("delete-pick")) return;
+        hideDeleteConfirm();
+        syncDeleteSelection();
+      });
+    }
+    if (deleteAsk) {
+      deleteAsk.addEventListener("click", function () {
+        const selected = deletePicks().filter(function (box) { return box.checked; }).length;
+        if (!selected || !deleteConfirm || !deleteConfirmText || !deleteIdle) return;
+        deleteConfirmText.textContent = selected === 1
+          ? "Delete this scan? Jobs found only by it are deleted. Jobs that also matched a scan you keep stay."
+          : "Delete " + selected + " scans? Jobs found only by those scans are deleted. Jobs that also matched a scan you keep stay.";
+        deleteIdle.hidden = true;
+        deleteConfirm.hidden = false;
+      });
+    }
+    if (deleteCancel) deleteCancel.addEventListener("click", hideDeleteConfirm);
+    if (deleteForm) {
+      deleteForm.addEventListener("submit", function (event) {
+        if (!deletePicks().some(function (box) { return box.checked; })) event.preventDefault();
+      });
+    }
     if (deleteBackdrop) {
       deleteBackdrop.addEventListener("click", function (event) {
-        const ask = event.target.closest("[data-ask-delete]");
-        if (ask) {
-          clearDeleteConfirm();
-          const row = ask.closest(".delete-row");
-          if (row) row.classList.add("is-confirm");
-          return;
-        }
-        const cancelBtn = event.target.closest("[data-cancel-delete]");
-        if (cancelBtn) {
-          const row = cancelBtn.closest(".delete-row");
-          if (row) row.classList.remove("is-confirm");
-          return;
-        }
         if (event.target === deleteBackdrop) closeDeleteModal();
       });
     }
@@ -926,9 +1030,8 @@
     }
     document.addEventListener("keydown", function (event) {
       if (event.key === "Escape") {
-        const pending = deleteBackdrop && deleteBackdrop.querySelector(".delete-row.is-confirm");
-        if (pending && deleteBackdrop.classList.contains("open")) {
-          pending.classList.remove("is-confirm");
+        if (deleteConfirm && !deleteConfirm.hidden && deleteBackdrop && deleteBackdrop.classList.contains("open")) {
+          hideDeleteConfirm();
           return;
         }
         if (backdrop && backdrop.classList.contains("open")) closeScan();

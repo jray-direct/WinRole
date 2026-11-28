@@ -44,11 +44,16 @@ def keyword_pattern(keyword: str, *, whole_word: bool = False) -> re.Pattern[str
 
     A leading letter boundary is always on, so "Security+" does not match inside
     "Cybersecurity+". A trailing boundary is added only when whole_word is set,
-    so "Architect" still matches "Architects".
+    so "Architect" still matches "Architects". Dashes, commas, slashes, colons,
+    and parentheses between words are the same break. A known cert also matches
+    the other names postings use for it.
     """
     raw = keyword.strip()
     key = raw.lower().rstrip(".")
-    if key in {"sr", "senior"}:
+    alias = _cert_alias_body(raw)
+    if alias:
+        body = alias
+    elif key in {"sr", "senior"}:
         body = r"(?:senior|sr\.?)"
     elif raw.upper() == "CCNA":
         body = r"(?:CCNA(?!\s+Security)|cisco\s+certified\s+network\s+associate)"
@@ -56,26 +61,127 @@ def keyword_pattern(keyword: str, *, whole_word: bool = False) -> re.Pattern[str
         body = r"(?:(?:comptia\s+)?security(?:\s*\+|[\s-]*plus\b)|(?<![A-Za-z])sec\+)"
     elif key in {"network+", "comptia network+"}:
         body = r"(?:(?:comptia\s+)?network(?:\s*\+|[\s-]*plus\b)|(?<![A-Za-z])(?:net|n)\+)"
+    elif key in {"a+", "comptia a+"}:
+        # "a plus" means "a bonus" far more often than the A+ cert. The cert is
+        # "A+", "CompTIA A+", or "A plus" next to certification language.
+        body = (
+            r"(?:comptia\s+)?a\s*\+(?!\s*(?:player|work|job|effort|team|quality|"
+            r"candidate|performer|rating|experience|code|grade|student)\b)"
+            r"|comptia\s+a\s+plus\b"
+            r"|\ba\s+plus\b(?=\s+(?:cert(?:ification|ified)?\b|or\b|and\b|,))"
+            r"|(?:hold|have|obtain|possess|require[ds]?|required|get|need)\s+"
+            r"(?:an?\s+|the\s+)?(?:comptia\s+)?a\s+plus\b"
+        )
     elif raw.endswith("+") and len(raw) > 1:
         stem = re.escape(raw[:-1].rstrip())
         body = rf"(?:comptia\s+)?{stem}(?:\s*\+|[\s-]*plus\b)"
     else:
-        parts = []
-        for ch in raw:
-            if ch == "+":
-                parts.append(r"\+")
-            elif ch == "-" or ch in "\u2010\u2011\u2013\u2014":
-                parts.append(r"[\s\u2010\u2011\u2013\u2014-]+")
-            elif ch.isspace():
-                parts.append(r"[\s\u2010\u2011\u2013\u2014-]+")
-            else:
-                parts.append(re.escape(ch))
-        body = "".join(parts) or r"$^"
+        flexed = _flex_phrase(raw)
+        if flexed:
+            body = flexed
+        else:
+            parts = []
+            for ch in raw:
+                if ch == "+":
+                    parts.append(r"\+")
+                elif ch == "-" or ch in "\u2010\u2011\u2013\u2014":
+                    parts.append(r"[\s\u2010\u2011\u2013\u2014-]+")
+                elif ch.isspace():
+                    parts.append(r"[\s\u2010\u2011\u2013\u2014-]+")
+                else:
+                    parts.append(re.escape(ch))
+            body = "".join(parts) or r"$^"
     if whole_word:
         body = rf"(?<![A-Za-z0-9])(?:{body})(?![A-Za-z0-9])"
     else:
         body = rf"(?<![A-Za-z])(?:{body})"
     return re.compile(body, re.IGNORECASE)
+
+
+# Space, dash, comma, colon, slash, or parentheses. One break, however it is written.
+_PHRASE_SEP = r"[\s\u2010\u2011\u2013\u2014,/:|()\-]+"
+_PHRASE_WORDS = re.compile(r"[A-Za-z0-9+]+")
+
+
+def _flex_phrase(keyword: str) -> str | None:
+    """'Architect - Associate' also matches 'Architect (Associate)' and 'Architect, Associate'."""
+    words = _PHRASE_WORDS.findall(keyword)
+    if len(words) < 2:
+        return None
+    rest = _PHRASE_WORDS.sub("", keyword)
+    if not re.fullmatch(r"[\s\u2010\u2011\u2013\u2014,/:|()\-]*", rest or ""):
+        return None
+    body = _PHRASE_SEP.join(re.escape(word) for word in words)
+    if words[-1].lower() != "level":
+        body += r"(?:\s+level\b)?"
+    return body
+
+
+def _aws_architect_level(keyword: str) -> str | None:
+    """associate, professional, or '' when the keyword is that AWS cert. None otherwise."""
+    words = [word.lower() for word in _PHRASE_WORDS.findall(keyword)]
+    if "solutions" not in words or "architect" not in words:
+        return None
+    has_aws = "aws" in words or {"amazon", "web", "services"} <= set(words)
+    if not has_aws:
+        return None
+    if "associate" in words:
+        return "associate"
+    if "professional" in words:
+        return "professional"
+    return ""
+
+
+def _aws_architect_body(level: str) -> str:
+    """Every spelling of the AWS Solutions Architect cert, including the long Amazon name."""
+    prefix = r"(?:amazon\s+web\s+services(?:\s*\(\s*aws\s*\))?|aws)"
+    role = r"(?:\s+certified)?\s+solutions?\s+architect"
+    named = prefix + role
+    if level == "associate":
+        named += _PHRASE_SEP + r"associate(?:\s+level)?(?![A-Za-z])"
+        exam = r"|\bsaa-c\d\d\b"
+    elif level == "professional":
+        named += _PHRASE_SEP + r"professional(?:\s+level)?(?![A-Za-z])"
+        exam = r"|\bsap-c\d\d\b"
+    else:
+        named += r"(?:" + _PHRASE_SEP + r"(?:associate|professional)(?:\s+level)?(?![A-Za-z]))?"
+        exam = r"|\bsaa-c\d\d\b|\bsap-c\d\d\b"
+    return rf"(?:{named}{exam})"
+
+
+def _cert_alias_body(keyword: str) -> str | None:
+    level = _aws_architect_level(keyword)
+    if level is None:
+        return None
+    return _aws_architect_body(level)
+
+
+def aws_solutions_architect_cert_body() -> str:
+    """Catalog pattern: the cert, not a bare Solutions Architect job title."""
+    prefix = r"(?:amazon\s+web\s+services(?:\s*\(\s*aws\s*\))?|aws)"
+    certified_only = rf"{prefix}\s+certified\s+solutions?\s+architect\b"
+    nearby = (
+        rf"{prefix}\s+solutions?\s+architect\b(?=[^.\n]{{0,40}}\b(?:certification|certified|cert)\b)"
+        rf"|\b(?:certification|certified)\b[^.\n]{{0,40}}{prefix}\s+solutions?\s+architect\b"
+    )
+    return "(?:" + _aws_architect_body("associate") + "|" + _aws_architect_body("professional") + "|" + certified_only + "|" + nearby + ")"
+
+
+def scan_search_terms(keyword: str) -> list[str] | None:
+    """Extra board queries for a cert whose name is written more than one way.
+
+    None means the caller keeps its own single query. Indeed ignores punctuation,
+    so one 'AWS Solutions Architect Associate' query covers the dash and comma
+    forms. The Amazon Web Services form does not say AWS, so it is its own query.
+    """
+    level = _aws_architect_level(keyword)
+    if level is None:
+        return None
+    if level == "associate":
+        return ["AWS Solutions Architect Associate", "Amazon Web Services Solutions Architect Associate"]
+    if level == "professional":
+        return ["AWS Solutions Architect Professional", "Amazon Web Services Solutions Architect Professional"]
+    return ["AWS Solutions Architect", "Amazon Web Services Solutions Architect"]
 
 
 def _sentence_at(text: str, start: int, end: int) -> str:
@@ -625,37 +731,227 @@ CLEARANCE_ORDER = (
     "unspecified",
 )
 
+# Ordered highest first. A bare "T3" / "Tier 5" is not enough: those codes are
+# also room numbers and help-desk tiers, so they need a clearance cue in the sentence.
 _CLEARANCE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("sci", re.compile(r"ts/?\s*sci|top\s*secret/?\s*sci|\bsci\s+clearance|sensitive\s+compartmented", re.I)),
-    # T5 is a Top Secret investigation. DOE Q, and an L/Q pair, sit at that tier.
-    # "Tier 5" is a help-desk level as often as a clearance, so only the T5 code counts.
+    ("sci", re.compile(
+        r"\bts\s*[/\\-]*\s*sci\b"
+        r"|\btop[\s-]*secret\s*[/\\-]*\s*sci\b"
+        r"|\bsci\s+clearance"
+        r"|\bsci\s+eligib"
+        r"|sensitive\s+compartmented"
+        r"|\byankee\s+white\b"
+        r"|\b(?:ci|counter[\s-]?intelligence|full[\s-]?scope|lifestyle)\s+poly(?:graph)?\b"
+        r"|\b(?:active|current|interim)\s+sci\b(?!\s*(?:patient|patients|rehab|injury|unit|ward|program|clinic|center|case|cases|care|treatment)\b)"
+        r"|\b(?:have|hold|possess|obtain|maintain)\s+(?:an?\s+)?(?:active\s+|current\s+)?sci\b"
+        r"|\bspecial[\s-]+sensitive\b"
+        r"|\bts\b[^.\n]{0,30}\bpoly(?:graph)?\b",
+        re.I,
+    )),
     ("ts", re.compile(
-        r"top\s*secret|\bts\s+clearance|\bT5\b|"
-        r"\b(?:doe\s+)?q(?:\s*[/&-]\s*l)?\s*clearance\b|"
-        r"\b[lq]\s*/\s*q\b|\bq\s*/\s*l\b",
+        r"\btop[\s-]*secret\b"
+        r"|\bts\s+clearance"
+        r"|(?:active|current|interim|final)\s+ts\b"
+        r"|\bts\b(?=\s+(?:required|clearance|eligib))"
+        r"|\b(?:have|hold|possess|obtain|maintain)\s+(?:an?\s+)?(?:active\s+|current\s+)?ts\b"
+        r"|\bSSBI\b"
+        r"|single\s+scope\s+background"
+        r"|\b(?:doe\s+)?q(?:\s*[/&-]\s*l)?\s*clearance\b"
+        r"|\b[lq]\s*/\s*q\b"
+        r"|\bq\s*/\s*l\b"
+        r"|\bq-?cleared\b"
+        r"|\bcritical[\s-]+sensitive\b",
         re.I,
     )),
-    # T3 is a Secret investigation. DOE L alone is the lower of the L/Q pair.
+    # NACLC and ANACI are Secret investigations. DOE L alone is the lower L/Q tier.
     ("secret", re.compile(
-        r"secret\s+(security\s+)?clearance|(active|current)\s+secret\b|"
-        r"clearance.{0,40}\bsecret\b|\bsecret\b.{0,40}clearance|"
-        r"\bT3\b|\b(?:doe\s+)?l\s*clearance\b",
+        r"secret\s+(?:security\s+)?clearance"
+        r"|(?:active|current|interim|final|dod|collateral)\s+secret\b(?!\s+service\b)"
+        r"|clearance.{0,40}\bsecret\b"
+        r"|(?<!trade\s)(?<!top[\s-])\bsecret\b(?=\s+(?:or\s+higher|required|level|eligib))(?!\s+service\b)"
+        r"|\b(?:have|hold|possess|obtain|maintain)\s+(?:an?\s+)?(?:active\s+|current\s+|interim\s+)?secret\b(?!\s+service\b)"
+        r"|\bnaclc\b"
+        r"|\banaci\b"
+        r"|\b(?:doe\s+)?l\s*clearance\b"
+        r"|\bl-?cleared\b"
+        r"|\bnon-?critical[\s-]+sensitive\b",
         re.I,
     )),
-    ("public_trust", re.compile(r"public\s+trust|\bnaclc\b|\bT[24]\b", re.I)),
-    ("confidential", re.compile(r"confidential\s+clearance", re.I)),
+    ("public_trust", re.compile(r"public\s+trust|\bnaci\b", re.I)),
+    ("confidential", re.compile(r"confidential\s+(?:security\s+)?clearance", re.I)),
 ]
+
+# Tier 1, 2, and 4 are public trust. Tier 3 is Secret. Tier 5 is Top Secret.
+_TIER_LEVEL = {
+    "1": "public_trust", "2": "public_trust", "3": "secret", "4": "public_trust", "5": "ts",
+    "i": "public_trust", "ii": "public_trust", "iii": "secret", "iv": "public_trust", "v": "ts",
+}
+_TIER = re.compile(r"\btier\s*(?P<n>iv|iii|ii|v|i|[1-5])\b", re.I)
+_TCODE = re.compile(r"\bT(?P<n>[1-5])\b")
+# "Tier 3" is a help-desk rank as often as a clearance. The letter codes (T3, T5)
+# are rarer, so "minimum T3 required" counts, but a tier word needs an
+# investigation / clearance word in the same sentence.
+_TIER_CUE = re.compile(
+    r"\b(?:clearance|investigation|eligib|public\s+trust|adjudicat)\b",
+    re.I,
+)
+_TCODE_CUE = re.compile(
+    r"\b(?:clearance|investigation|eligib|public\s+trust|adjudicat|required|minimum|min\b|obtain|maintain)\b",
+    re.I,
+)
+# MBI is a public-trust investigation, and also a company name, so it needs a cue.
+_MBI = re.compile(r"\bMBI\b")
+_MBI_CUE = re.compile(r"\b(?:investigation|background|clearance|required|public\s+trust)\b", re.I)
+_SECRET_POSITION = re.compile(r"(?<!trade\s)\bsecret\s+position\b", re.I)
+_SECRET_POSITION_CUE = re.compile(r"\b(?:sf-?86|clearance|investigation|eligib)\b", re.I)
+_CLEARANCE_NONE = re.compile(
+    r"\bclearance\s*[:\-]\s*(?:n/?a\b|none\b|not\s+required|not\s+applicable|no\b)"
+    r"|\buncleared\b"
+    r"|\bnot\s+a\s+cleared\b"
+    r"|\bno\s+clearance\s+(?:needed|necessary|required)\b"
+    r"|\bposition\s+sensitivity\s*[:\-]\s*non-?sensitive\b",
+    re.I,
+)
+
+
+def _drop_shadowed(hits: list[tuple]) -> list[tuple]:
+    """Drop a hit sitting inside a longer one ("critical" inside "noncritical")."""
+    kept = []
+    for hit in hits:
+        start, end = hit[2], hit[3]
+        if any(
+            other[2] <= start and other[3] >= end and (other[3] - other[2]) > (end - start)
+            for other in hits
+        ):
+            continue
+        kept.append(hit)
+    return kept
+
+
+def _clearance_alternatives(text: str, hits: list[tuple]) -> bool:
+    """'Secret or TS/SCI' is a choice, so the floor is the lower level."""
+    ordered = sorted(hits, key=lambda hit: hit[2])
+    if len({hit[1] for hit in ordered}) < 2:
+        return False
+    for left, right in zip(ordered, ordered[1:]):
+        if left[3] > right[2]:
+            return False
+        if not re.search(r"\bor\b", text[left[3] : right[2]], re.I):
+            return False
+    return True
+
+
+def _span_gap(cue_start: int, cue_end: int, start: int, end: int) -> int:
+    if cue_end <= start:
+        return start - cue_end
+    if cue_start >= end:
+        return cue_start - end
+    return 0
+
+
+def _clearance_stance(
+    blob: str, start: int, end: int, others: list[tuple[int, int]]
+) -> str:
+    """required | preferred | equivalent | mentioned for this hit only.
+
+    A cue word belongs to the clearance mention it sits closer to, so
+    "Secret required; Top Secret is a plus" keeps Secret.
+    """
+    win_left = max(0, start - 100)
+    window = blob[win_left : min(len(blob), end + 100)]
+    ks, ke = start - win_left, end - win_left
+
+    def nearest(rx: re.Pattern[str]) -> int | None:
+        best: int | None = None
+        for hit in rx.finditer(window):
+            abs_start, abs_end = win_left + hit.start(), win_left + hit.end()
+            dist = _span_gap(abs_start, abs_end, start, end)
+            if any(_span_gap(abs_start, abs_end, other[0], other[1]) < dist for other in others):
+                continue
+            if best is None or dist < best:
+                best = dist
+        return best
+
+    scored = []
+    for key, rx in (
+        ("required", _STANCE_REQ),
+        ("preferred", _STANCE_PREF),
+        ("equivalent", _STANCE_EQUIV),
+    ):
+        dist = nearest(rx)
+        if dist is not None:
+            scored.append((dist, -STANCE_RANK[key], key))
+    scored.sort()
+    return scored[0][2] if scored else "mentioned"
+
+
+def _collect_clearance_hits(blob: str) -> list[tuple]:
+    raw: list[tuple] = []
+    seen: set[tuple[int, int, str]] = set()
+
+    def add(level: str, match: re.Match[str]) -> None:
+        key = (match.start(), match.end(), level)
+        if key in seen:
+            return
+        sentence = _sentence_at(blob, match.start(), match.end())
+        if _mention_is_negated(sentence, match):
+            return
+        seen.add(key)
+        raw.append((CLEARANCE_RANK.get(level, 0), level, match.start(), match.end()))
+
+    for level, pat in _CLEARANCE_PATTERNS:
+        for match in pat.finditer(blob):
+            add(level, match)
+    for match in _TIER.finditer(blob):
+        sentence = _sentence_at(blob, match.start(), match.end())
+        if not _TIER_CUE.search(sentence):
+            continue
+        add(_TIER_LEVEL[match.group("n").lower()], match)
+    for match in _TCODE.finditer(blob):
+        sentence = _sentence_at(blob, match.start(), match.end())
+        if not _TCODE_CUE.search(sentence):
+            continue
+        add(_TIER_LEVEL[match.group("n")], match)
+    for match in _MBI.finditer(blob):
+        sentence = _sentence_at(blob, match.start(), match.end())
+        if not _MBI_CUE.search(sentence):
+            continue
+        add("public_trust", match)
+    for match in _SECRET_POSITION.finditer(blob):
+        sentence = _sentence_at(blob, match.start(), match.end())
+        if not _SECRET_POSITION_CUE.search(sentence):
+            continue
+        add("secret", match)
+
+    kept = _drop_shadowed(raw)
+    kept.sort(key=lambda hit: hit[2])
+    spans = [(hit[2], hit[3]) for hit in kept]
+    hits: list[tuple] = []
+    for index, hit in enumerate(kept):
+        others = spans[:index] + spans[index + 1 :]
+        hits.append((*hit, _clearance_stance(blob, hit[2], hit[3], others)))
+    return hits
 
 
 def classify_clearance(text: str) -> str:
+    """Required clearance. A higher level that is only preferred does not raise it.
+
+    "Secret or TS/SCI" keeps Secret. "L/Q" stays Top Secret: that pair is one
+    investigation, not a choice. No level ("must obtain a clearance") stays
+    unspecified. "Clearance: N/A" and "uncleared" are none.
+    """
     if not text or not str(text).strip():
         return "unspecified"
     blob = str(text)
-    for level, pat in _CLEARANCE_PATTERNS:
-        for match in pat.finditer(blob):
-            sentence = _sentence_at(blob, match.start(), match.end())
-            if not _mention_is_negated(sentence, match):
-                return level
+    hits = _collect_clearance_hits(blob)
+    if hits:
+        floors = [hit for hit in hits if hit[4] != "preferred"]
+        pool = floors or hits
+        if _clearance_alternatives(blob, pool):
+            return min(pool, key=lambda hit: hit[0])[1]
+        return max(pool, key=lambda hit: hit[0])[1]
+    if _CLEARANCE_NONE.search(blob):
+        return "none"
     if has_affirmative_mention(blob, "clearance"):
         return "unspecified"
     if keyword_pattern("clearance", whole_word=True).search(blob):
@@ -743,16 +1039,23 @@ def affirmative_stance(text: str, pat: re.Pattern[str]) -> str | None:
     return strongest
 
 
+def _job_cert_patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """The resume catalog. Imported lazily so resume can keep using keyword_pattern."""
+    from resume import CERTIFICATIONS
+
+    return CERTIFICATIONS
+
+
 def cert_stances(text: str) -> dict[str, str]:
     """{cert label: required|preferred|equivalent|mentioned} for certs asked about in `text`.
 
     Uses the same negation check as the exclude box, so "no Security+ required"
-    is not counted.
+    is not counted. Every catalog cert is read, not just the profile short list.
     """
     if not text:
         return {}
     out: dict[str, str] = {}
-    for label, pat in CERT_PATTERNS:
+    for label, pat in _job_cert_patterns():
         stance = affirmative_stance(text, pat)
         if stance:
             out[label] = stance
@@ -890,9 +1193,14 @@ def score_job(
                 stances = json.loads(stances) if stances else {}
             except ValueError:
                 stances = {}
+        # Profile checkboxes are the short list. A required cert the form cannot
+        # record must not dock a profile-only score; the resume Heat Score still sees it.
+        featured = {label.lower() for label, _term in CERT_STACK}
         cert_points = 0.0
         notes: list[str] = []
         for cert, how in stances.items():
+            if cert.lower() not in featured:
+                continue
             if keyword and cert.lower() == keyword.lower():
                 continue
             if cert.lower() in held:

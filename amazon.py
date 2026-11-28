@@ -15,9 +15,12 @@ qualifications, team, category, schedule, and posted date. No second request
 per job.
 
 The API will not return more than 100 jobs per call, and it refuses any
-window past 10,000 (offset + limit). The US board is larger than that
-(about 12,600). Every opening has one job category, and the largest
-category is a few thousand, so a full scan walks one category at a time.
+window past 10,000 (offset + limit). hits stays at 10000 once a search
+reaches that ceiling. A keyword is sent as base_query, and other page
+filters go on that same search. Under the cap, pages are fetched together.
+A full US board (about 12,600 openings) or any search that hits the cap
+is walked one category at a time, because every opening has one category
+and the largest category is a few thousand.
 Filters on the page are OR inside a group and AND across groups:
 
 - category[]                 job category
@@ -40,6 +43,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -55,6 +59,9 @@ CAREERS_URL = (
 USER_AGENT = "WinRole job search (public Amazon Jobs search)"
 PAGE_SIZE = 100
 MAX_WINDOW = 10000
+# Pages after the first are fetched together. Four stays under a polite pace
+# for search.json, which takes about two seconds and ~1 MB per full page.
+PAGE_WORKERS = 4
 DEFAULT_LOC = "united states"
 # Map center the US search page sends. It does not limit results unless a radius is set.
 MAP_LAT = "38.89036"
@@ -376,7 +383,7 @@ def _refresh_options(log: ProgressFn) -> list[str]:
 
 def _pairs(
     *,
-    category: str | None,
+    categories: list[str] | None = None,
     locations: list[str],
     teams: list[str],
     schedules: list[str],
@@ -384,6 +391,7 @@ def _pairs(
     intern: bool,
     seasonal: bool,
     offset: int,
+    query: str = "",
 ) -> list[tuple[str, str]]:
     pairs = [
         ("loc_query", loc_query or DEFAULT_LOC),
@@ -394,8 +402,12 @@ def _pairs(
         ("offset", str(offset)),
         ("result_limit", str(PAGE_SIZE)),
     ]
-    if category:
-        pairs.append(("category[]", category))
+    text = (query or "").strip()
+    if text:
+        pairs.append(("base_query", text))
+    for name in categories or []:
+        if name:
+            pairs.append(("category[]", name))
     for place in locations:
         pairs.append(("normalized_location[]", place))
     for team in teams:
@@ -409,16 +421,21 @@ def _pairs(
     return pairs
 
 
-def _page(pairs: list[tuple[str, str]]) -> tuple[list[dict[str, Any]], str | None]:
+def _page(pairs: list[tuple[str, str]]) -> tuple[list[dict[str, Any]], str | None, int | None]:
     try:
         data = _get_json(pairs)
     except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
-        return [], str(exc)
+        return [], str(exc), None
     error = data.get("error")
     if error:
-        return [], str(error)
+        return [], str(error), None
     jobs = [job for job in (data.get("jobs") or []) if isinstance(job, dict)]
-    return jobs, None
+    raw_hits = data.get("hits")
+    try:
+        hits = int(raw_hits) if raw_hits is not None and raw_hits != "" else None
+    except (TypeError, ValueError):
+        hits = None
+    return jobs, None, hits
 
 
 def opening_to_record(job: dict[str, Any], team_labels: dict[str, str] | None = None) -> dict[str, Any]:
@@ -496,7 +513,12 @@ def fetch_openings(
     kw_match: str = "any",
     progress: ProgressFn | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """United States openings from amazon.jobs, walked by job category."""
+    """United States openings from amazon.jobs.
+
+    The keyword is Amazon's search box. That result set is paged in parallel.
+    Amazon will not return past 10,000 rows, so a search that hits the cap
+    (including a scan with no keyword) continues one category at a time.
+    """
     log = progress or (lambda _msg: None)
     errors: list[str] = []
     chosen = _unique(list(categories or []))
@@ -504,19 +526,19 @@ def fetch_openings(
     team_ids = _unique(list(teams or []))
     schedule_ids = _unique(list(schedules or []))
     where = (loc_query or "").strip()
+    query = (keyword or "").strip()
 
     log("Loading Amazon Jobs for the United States")
-    catalog = _refresh_options(log)
-    labels = {str(team.get("id")): str(team.get("label") or "") for team in filter_options().get("teams") or []}
-    partitions = chosen or catalog
-    if not partitions:
-        raise RuntimeError("Amazon Jobs did not return any job categories")
+    labels = {
+        str(team.get("id")): str(team.get("label") or "")
+        for team in filter_options().get("teams") or []
+    }
 
     bits = []
+    if query:
+        bits.append("keyword " + query)
     if chosen:
         bits.append("categories " + ", ".join(chosen))
-    else:
-        bits.append(f"all {len(partitions)} categories")
     if places:
         bits.append("cities " + ", ".join(places))
     if team_ids:
@@ -529,54 +551,157 @@ def fetch_openings(
         bits.append("internships")
     if seasonal:
         bits.append("seasonal")
-    log("Board filters: " + "; ".join(bits))
+    if bits:
+        log("Board filters: " + "; ".join(bits))
 
-    pattern = keyword_pattern(keyword) if (kw_match or "any") == "title" and keyword.strip() else None
+    pattern = keyword_pattern(query) if (kw_match or "any") == "title" and query else None
     seen: set[str] = set()
     records: list[dict[str, Any]] = []
     fetched = 0
-    for index, category in enumerate(partitions, start=1):
-        offset = 0
-        category_count = 0
-        while offset < MAX_WINDOW:
-            jobs, error = _page(
-                _pairs(
-                    category=category,
-                    locations=places,
-                    teams=team_ids,
-                    schedules=schedule_ids,
-                    loc_query=where,
-                    intern=intern,
-                    seasonal=seasonal,
-                    offset=offset,
-                )
-            )
-            if error:
-                errors.append(f"{category}: {error}")
-                log(f"! {category}: {error}")
-                break
-            if not jobs:
-                break
-            fetched += len(jobs)
-            for job in jobs:
-                title = str(job.get("title") or "")
-                if title_include and not has_any_phrase(title, title_include):
-                    continue
-                if title_exclude and has_any_phrase(title, title_exclude):
-                    continue
-                if pattern and not pattern.search(title):
-                    continue
-                key = str(job.get("id_icims") or job.get("id") or "")
-                if key and key in seen:
-                    continue
-                if key:
-                    seen.add(key)
-                records.append(opening_to_record(job, labels))
-                category_count += 1
-            if len(jobs) < PAGE_SIZE:
-                break
-            offset += PAGE_SIZE
-            time.sleep(0.15)
-        log(f"[{index}/{len(partitions)}] {category}: {category_count}")
+
+    def take(jobs: list[dict[str, Any]]) -> int:
+        kept = 0
+        for job in jobs:
+            title = str(job.get("title") or "")
+            if title_include and not has_any_phrase(title, title_include):
+                continue
+            if title_exclude and has_any_phrase(title, title_exclude):
+                continue
+            if pattern and not pattern.search(title):
+                continue
+            key = str(job.get("id_icims") or job.get("id") or "")
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            records.append(opening_to_record(job, labels))
+            kept += 1
+        return kept
+
+    def pairs_at(cats: list[str], offset: int) -> list[tuple[str, str]]:
+        return _pairs(
+            categories=cats,
+            locations=places,
+            teams=team_ids,
+            schedules=schedule_ids,
+            loc_query=where,
+            intern=intern,
+            seasonal=seasonal,
+            offset=offset,
+            query=query,
+        )
+
+    def read_offsets(
+        cats: list[str], offsets: list[int]
+    ) -> list[tuple[int, list[dict[str, Any]], str | None]]:
+        if not offsets:
+            return []
+        if len(offsets) == 1:
+            jobs, error, _hits = _page(pairs_at(cats, offsets[0]))
+            return [(offsets[0], jobs, error)]
+
+        found: list[tuple[int, list[dict[str, Any]], str | None]] = []
+        workers = min(PAGE_WORKERS, len(offsets))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_page, pairs_at(cats, offset)): offset for offset in offsets}
+            for future in as_completed(futures):
+                offset = futures[future]
+                try:
+                    jobs, error, _hits = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    jobs, error = [], str(exc)
+                found.append((offset, jobs, error))
+        found.sort(key=lambda item: item[0])
+        return found
+
+    def load(cats: list[str], label: str) -> str:
+        nonlocal fetched
+        jobs, error, hits = _page(pairs_at(cats, 0))
+        if error:
+            errors.append(f"{label}: {error}")
+            log(f"! {label}: {error}")
+            return "error"
+        # hits stays at 10000 once a search crosses the ceiling. A combined
+        # search has to be split by category or rows past the cap never appear.
+        if hits is not None and hits >= MAX_WINDOW and len(cats) != 1:
+            return "capped"
+        total = hits
+        raw = len(jobs)
+        kept = take(jobs)
+        fetched += raw
+        if not jobs or len(jobs) < PAGE_SIZE or (total is not None and raw >= total):
+            listed = total if total is not None else raw
+            log(f"{label}: {listed} listed, {raw} read, {kept} kept")
+            return "ok"
+
+        if total is None:
+            offset = PAGE_SIZE
+            while offset < MAX_WINDOW:
+                page_jobs, page_error, _hits = _page(pairs_at(cats, offset))
+                if page_error:
+                    errors.append(f"{label} offset {offset}: {page_error}")
+                    log(f"! {label} offset {offset}: {page_error}")
+                    break
+                raw += len(page_jobs)
+                kept += take(page_jobs)
+                fetched += len(page_jobs)
+                if len(page_jobs) < PAGE_SIZE:
+                    break
+                offset += PAGE_SIZE
+                time.sleep(0.15)
+            log(f"{label}: {raw} read, {kept} kept")
+            return "ok"
+
+        limit = min(total, MAX_WINDOW)
+        offsets = list(range(PAGE_SIZE, limit, PAGE_SIZE))
+        pages = len(offsets) + 1
+        log(f"{label}: {total} listed, reading {pages} pages")
+        for offset, page_jobs, page_error in read_offsets(cats, offsets):
+            if page_error:
+                errors.append(f"{label} offset {offset}: {page_error}")
+                log(f"! {label} offset {offset}: {page_error}")
+                continue
+            raw += len(page_jobs)
+            kept += take(page_jobs)
+            fetched += len(page_jobs)
+            if total < MAX_WINDOW:
+                log(f"{label}: {min(raw, total)}/{total}")
+        log(f"{label}: {raw} read, {kept} kept")
+        return "ok"
+
+    def use_labels() -> None:
+        labels.clear()
+        labels.update(
+            {
+                str(team.get("id")): str(team.get("label") or "")
+                for team in filter_options().get("teams") or []
+            }
+        )
+
+    def walk(partitions: list[str]) -> None:
+        if not partitions:
+            raise RuntimeError("Amazon Jobs did not return any job categories")
+        for index, category in enumerate(partitions, start=1):
+            load([category], f"[{index}/{len(partitions)}] {category}")
+
+    narrowed = bool(query or chosen or places or team_ids or schedule_ids or where or intern or seasonal)
+    if narrowed:
+        if len(chosen) == 1:
+            label = chosen[0]
+        elif query:
+            label = f"Amazon search {query!r}"
+        else:
+            label = "Amazon Jobs"
+        if load(chosen, label) == "capped":
+            log("Amazon capped this search at 10,000 rows, so it continues one category at a time")
+            partitions = chosen or _refresh_options(log)
+            use_labels()
+            walk(partitions)
+    else:
+        partitions = _refresh_options(log)
+        use_labels()
+        log(f"Board filters: all {len(partitions)} categories")
+        walk(partitions)
+
     log(f"Amazon Jobs: {fetched} rows read, {len(records)} unique openings kept")
     return records, {"raw_fetched": fetched, "described": len(records), "errors": errors}
